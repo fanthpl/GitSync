@@ -10,12 +10,12 @@ The `plugins/` directory *is* the git repository. GitSync creates it on first st
 
 ```
 plugins/
-├── .git/              <- created by GitSync
-├── .gitignore         <- generated from pack.json, ignores itself too
-├── pack.json          <- comes from the remote, declares what is synced
-├── ItemsAdder-4.0.jar <- tracked
-├── ItemsAdder/        <- only the declared paths inside are tracked
-└── SomeOtherPlugin/   <- never touched, not in pack.json
+├── .git/                 <- created by GitSync
+├── .gitignore            <- generated from pack.json, ignores itself too
+├── pack.json             <- comes from the remote, declares what is synced
+├── ItemsAdder_4.0.17.jar <- tracked
+├── ItemsAdder/           <- only the declared paths inside are tracked
+└── SomeOtherPlugin/      <- never touched, not in pack.json
 ```
 
 On a normal sync GitSync runs `git pull`, diffs the old and new `HEAD`, and dispatches the reload commands of every plugin whose files appear in that diff. A merge conflict aborts the sync with an error instead of silently discarding anything.
@@ -28,10 +28,16 @@ Lives in the root of the remote repository and declares what belongs to the pack
 {
     "plugins": {
         "ItemsAdder": {
-            "pluginJarWildcard": "ItemsAdder-*.jar",
+            "pluginJarWildcard": "ItemsAdder_*.jar",
             "configPaths": [
-                "ItemsAdder/storage",
-                "ItemsAdder/config.yml"
+              "ItemsAdder/contents",
+              "ItemsAdder/storage/custom_fires_ids_cache.yml",
+              "ItemsAdder/storage/font_images_unicode_cache.yml",
+              "ItemsAdder/storage/items_ids_cache.yml",
+              "ItemsAdder/storage/real_blocks_ids_cache.yml",
+              "ItemsAdder/storage/real_blocks_note_ids_cache.yml",
+              "ItemsAdder/storage/real_transparent_blocks_ids_cache.yml",
+              "ItemsAdder/storage/real_wire_ids_cache.yml"
             ],
             "reloadCommands": [
                 "iareload"
@@ -101,7 +107,7 @@ Jars are the exception, and no plugin can work around it: the server scans `plug
 `git pull` refuses to overwrite untracked local files, and on a fresh server every jar and config in `plugins/` is untracked. So the very first sync usually fails with:
 
 ```
-Sync failed: local files would be overwritten: ItemsAdder-4.0.jar, ItemsAdder/config.yml ...
+Sync failed: local files would be overwritten: ItemsAdder_4.0.17.jar, ItemsAdder/config.yml ...
 ```
 
 That is ordinary git behaviour, not a bug. Delete or move the listed files and sync again - the repository has its own copies.
