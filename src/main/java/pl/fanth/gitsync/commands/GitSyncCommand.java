@@ -20,11 +20,14 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
 import pl.fanth.gitsync.GitSyncPlugin;
+import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
+import pl.fanth.gitsync.git.PackManifest;
 
+import java.util.Map;
 import java.util.Set;
-import java.util.function.Consumer;
 import java.util.logging.Level;
 
 @CommandAlias("gitsync")
@@ -59,7 +62,7 @@ public class GitSyncCommand extends BaseCommand {
         send(sender, "Reloaded!", NamedTextColor.GREEN);
     }
 
-    @Subcommand("resethead")
+    @Subcommand("git resethead")
     @Description("Reset the repository to HEAD (git reset --hard HEAD)")
     public void resetHead(CommandSender sender) {
         send(sender, "Resetting the repository to HEAD...", NamedTextColor.GREEN);
@@ -81,8 +84,57 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("status")
-    @Description("Show the pack status (git status)")
+    @Description("Show the pack state and whether the server needs a restart")
     public void status(CommandSender sender) {
+        GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+        PluginConfiguration config = GitSyncPlugin.instance().pluginConfiguration();
+
+        runAsync(sender, "reading the pack state", git -> {
+            Repository repo = git.getRepository();
+            PackManifest manifest = service.manifest();
+
+            send(sender, "--- GitSync ---", NamedTextColor.GOLD);
+            field(sender, "Remote", config.remote.isBlank() ? "<not configured>" : config.remote);
+            field(sender, "Branch", repo.getBranch());
+            field(sender, "Commit", describeHead(repo));
+            field(sender, "Pack", manifest.plugins.size() + " plugin(s): " + String.join(", ", manifest.plugins.keySet()));
+            field(sender, "Auto sync", "every " + config.checkIntervalSeconds + "s" + (service.isSyncing() ? " (running now)" : ""));
+
+            Map<String, String> reasons = service.restartReasons();
+            if (reasons.isEmpty()) {
+                field(sender, "Restart required", "no");
+                return;
+            }
+
+            sender.sendMessage(Component.text("Restart required: ").color(NamedTextColor.GRAY)
+                .append(Component.text("YES").color(NamedTextColor.RED)));
+            for (Map.Entry<String, String> reason : reasons.entrySet()) {
+                sender.sendMessage(Component.text("  " + reason.getKey() + " ").color(NamedTextColor.WHITE)
+                    .append(Component.text("(" + reason.getValue() + ")").color(NamedTextColor.GRAY)));
+            }
+        });
+    }
+
+    /** Short hash and subject of HEAD, or a note when the repository has no commits yet. */
+    private String describeHead(Repository repo) throws Exception {
+        ObjectId head = repo.resolve(Constants.HEAD);
+        if (head == null) {
+            return "<nothing pulled yet>";
+        }
+        try (RevWalk walk = new RevWalk(repo)) {
+            RevCommit commit = walk.parseCommit(head);
+            return head.name().substring(0, 7) + " " + commit.getShortMessage();
+        }
+    }
+
+    private void field(CommandSender sender, String name, String value) {
+        sender.sendMessage(Component.text(name + ": ").color(NamedTextColor.GRAY)
+            .append(Component.text(value).color(NamedTextColor.WHITE)));
+    }
+
+    @Subcommand("git status")
+    @Description("Show the working tree state (git status)")
+    public void gitStatus(CommandSender sender) {
         send(sender, "Checking the repository status...", NamedTextColor.GREEN);
 
         runAsync(sender, "checking the repository status", git -> {
@@ -104,7 +156,7 @@ public class GitSyncCommand extends BaseCommand {
         });
     }
 
-    @Subcommand("showahead")
+    @Subcommand("git showahead")
     @Description("Show commits present locally but missing on the remote (git log origin/<branch>..HEAD)")
     public void showAhead(CommandSender sender) {
         send(sender, "Fetching commits...", NamedTextColor.GREEN);
@@ -139,7 +191,7 @@ public class GitSyncCommand extends BaseCommand {
         });
     }
 
-    @Subcommand("commitandpush")
+    @Subcommand("git commitandpush")
     @Description("Commit the current changes and push them (git commit -m <message> & git push)")
     @Syntax("<message>")
     public void commitAndPush(CommandSender sender, String message) {

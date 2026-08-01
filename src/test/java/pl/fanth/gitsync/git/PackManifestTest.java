@@ -3,6 +3,7 @@ package pl.fanth.gitsync.git;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,6 +39,35 @@ class PackManifestTest {
         assertTrue(lines.contains("!/ItemsAdder/config.yml"));
         assertTrue(lines.contains("!/ItemsAdder-*.jar"));
         assertTrue(lines.indexOf("/**") < lines.indexOf("!/ItemsAdder/"), "negations must come after the catch-all");
+    }
+
+    @Test
+    void restartIsRequiredForJarsAndForConfigsNothingCanReload() {
+        PackManifest manifest = PackManifest.parse("""
+                {
+                  "plugins": {
+                    "ItemsAdder": {
+                      "pluginJarWildcard": "ItemsAdder-*.jar",
+                      "configPaths": ["ItemsAdder/config.yml"],
+                      "reloadCommands": ["iareload"]
+                    },
+                    "Vault": {
+                      "pluginJarWildcard": "Vault-*.jar",
+                      "configPaths": ["Vault/config.yml"]
+                    }
+                  }
+                }
+                """);
+
+        // A reload command covers it, no restart needed
+        assertEquals(Map.of(), manifest.restartRequiredPaths(Set.of("ItemsAdder/config.yml")));
+        // Nothing outside the pack forces a restart either
+        assertEquals(Map.of(), manifest.restartRequiredPaths(Set.of("pack.json")));
+
+        assertEquals(Map.of("ItemsAdder-4.0.jar", "plugin jar changed"),
+                manifest.restartRequiredPaths(Set.of("ItemsAdder-4.0.jar")));
+        assertEquals(Map.of("Vault/config.yml", "no reload commands declared"),
+                manifest.restartRequiredPaths(Set.of("Vault/config.yml")));
     }
 
     @Test

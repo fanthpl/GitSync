@@ -28,19 +28,32 @@ public class PackManifest {
 
         /** Does a repository-relative path belong to this plugin? */
         public boolean matches(String path) {
-            if (this.configPaths != null) {
-                for (String configPath : this.configPaths) {
-                    String clean = normalize(configPath);
-                    if (!clean.isEmpty() && (path.equals(clean) || path.startsWith(clean + "/"))) {
-                        return true;
-                    }
+            return matchesConfig(path) || matchesJar(path);
+        }
+
+        public boolean matchesConfig(String path) {
+            if (this.configPaths == null) {
+                return false;
+            }
+            for (String configPath : this.configPaths) {
+                String clean = normalize(configPath);
+                if (!clean.isEmpty() && (path.equals(clean) || path.startsWith(clean + "/"))) {
+                    return true;
                 }
             }
+            return false;
+        }
+
+        public boolean matchesJar(String path) {
             if (this.pluginJarWildcard == null || this.pluginJarWildcard.isBlank()) {
                 return false;
             }
             PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + normalize(this.pluginJarWildcard));
             return matcher.matches(java.nio.file.Path.of(path));
+        }
+
+        public boolean hasReloadCommands() {
+            return this.reloadCommands != null && !this.reloadCommands.isEmpty();
         }
     }
 
@@ -115,6 +128,30 @@ public class PackManifest {
     /** Reload commands of every plugin in the pack, in pack.json order. */
     public List<String> allReloadCommands() {
         return commandsOf(this.plugins.values());
+    }
+
+    /**
+     * Changed paths that no reload command can apply, so the server has to be restarted:
+     * a plugin jar was added, removed or updated, or a config of a plugin that declares
+     * no reload commands changed.
+     *
+     * @return the offending paths mapped to the reason, empty when a reload is enough
+     */
+    public Map<String, String> restartRequiredPaths(Collection<String> changedPaths) {
+        Map<String, String> reasons = new LinkedHashMap<>();
+        for (String path : changedPaths) {
+            for (Entry entry : this.plugins.values()) {
+                if (entry.matchesJar(path)) {
+                    reasons.put(path, "plugin jar changed");
+                    break;
+                }
+                if (entry.matchesConfig(path) && !entry.hasReloadCommands()) {
+                    reasons.put(path, "no reload commands declared");
+                    break;
+                }
+            }
+        }
+        return reasons;
     }
 
     private static List<String> commandsOf(Collection<Entry> entries) {

@@ -92,11 +92,35 @@ All of them need the `gitsync.admin` permission.
 | Command | What it does |
 | --- | --- |
 | `/gitsync sync [force]` | Pull now. `force` runs every reload command in `pack.json` even when nothing changed. |
-| `/gitsync status` | `git status` of the pack, colour coded per change type. |
-| `/gitsync showahead` | Commits that exist locally but not on the remote. |
-| `/gitsync commitandpush <message>` | Commit everything the pack tracks and push it - the way to publish a change made on one server to the others. |
-| `/gitsync resethead` | `git clean -fd` + `git reset --hard HEAD`. Throws away local edits to tracked files; files outside `pack.json` are ignored, so `clean` leaves them alone. |
+| `/gitsync status` | Remote, branch, current commit, what the pack contains - and whether the server needs a restart. |
 | `/gitsync reload` | Reload `config.yml` and restart the periodic check. |
+
+### Restart required
+
+Not every change can be applied by a reload command, so `/gitsync status` tracks the ones that cannot and names them:
+
+```
+--- GitSync ---
+Remote: https://github.com/you/your-pack.git
+Branch: main
+Commit: a1b2c3d Update ItemsAdder to 4.0.17
+Pack: 2 plugin(s): ItemsAdder, EssentialsX
+Auto sync: every 300s
+Restart required: YES
+  ItemsAdder_4.0.17.jar (plugin jar changed)
+  SomePlugin/config.yml (no reload commands declared)
+```
+
+A restart is flagged when a sync adds, removes or updates a plugin jar, or when it changes a config of a plugin whose entry declares no `reloadCommands`. The flag lives in memory only - the restart it asks for is what clears it.
+
+The raw git plumbing sits under `/gitsync git` for when a sync needs a closer look:
+
+| Command | What it does |
+| --- | --- |
+| `/gitsync git status` | `git status` of the pack, colour coded per change type. |
+| `/gitsync git showahead` | Commits that exist locally but not on the remote. |
+| `/gitsync git commitandpush <message>` | Commit everything the pack tracks and push it - the way to publish a change made on one server to the others. |
+| `/gitsync git resethead` | `git clean -fd` + `git reset --hard HEAD`. Throws away local edits to tracked files; files outside `pack.json` are ignored, so `clean` leaves them alone. |
 
 ## Startup behaviour
 

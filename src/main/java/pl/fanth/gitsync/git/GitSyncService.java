@@ -28,8 +28,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -49,6 +51,8 @@ public class GitSyncService {
     private final GitSyncPlugin plugin;
 
     private final AtomicBoolean syncing = new AtomicBoolean();
+    // Cleared by the restart itself, so it never needs to be persisted
+    private final Map<String, String> restartReasons = new LinkedHashMap<>();
 
     private Git git;
     private BukkitTask task;
@@ -117,6 +121,21 @@ public class GitSyncService {
         return this.syncing.get();
     }
 
+    /** Paths pulled since this boot that a reload command cannot apply, mapped to the reason. */
+    public synchronized Map<String, String> restartReasons() {
+        return new LinkedHashMap<>(this.restartReasons);
+    }
+
+    /** The pack as it currently sits on disk, empty when there is no readable pack.json. */
+    public PackManifest manifest() {
+        try {
+            return readManifest();
+        } catch (IOException exception) {
+            this.logger.log(Level.WARNING, "Could not read pack.json", exception);
+            return new PackManifest();
+        }
+    }
+
     /** The shared repository handle, null until open() succeeds. Do not close it. */
     public Git git() {
         return this.git;
@@ -176,6 +195,8 @@ public class GitSyncService {
 
             PackManifest manifest = readManifest();
             Files.write(new File(this.repoDir, ".gitignore").toPath(), manifest.gitignoreLines(), StandardCharsets.UTF_8);
+
+            this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
 
             List<String> commands = force ? manifest.allReloadCommands() : manifest.reloadCommandsFor(changed);
             this.logger.info("Pulled " + after.name().substring(0, 7) + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
