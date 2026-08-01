@@ -48,7 +48,7 @@ Lives in the root of the remote repository and declares what belongs to the pack
         "EssentialsX": {
             "pluginJarWildcard": "EssentialsX-*.jar",
             "configPaths": [
-                "EssentialsX/config.yml"
+                "Essentials/config.yml"
             ],
             "reloadCommands": [
                 "ess reload"
