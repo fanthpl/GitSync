@@ -4,6 +4,8 @@ Keep plugin jars and configs identical across Minecraft servers, using a Git rep
 
 One repository holds the jars and config files you care about. Every server runs GitSync, pulls that repository into its own `plugins/` directory, and runs the right reload command for whatever actually changed. Edit a config once, commit, and every server picks it up.
 
+You decide what is in the pack. A plugin is synced only once you add it to `pack.json` - everything else in `plugins/` is left completely alone, keeping whatever jar and config that particular server has. Nothing is synced by accident, and adding or removing a plugin from the pack is a one-entry edit.
+
 ## How it works
 
 The `plugins/` directory *is* the git repository. GitSync creates it on first start, then keeps a `.gitignore` there that ignores everything except the paths declared in `pack.json` - so the repo only ever tracks what you listed, and the rest of `plugins/` stays private to each server.
