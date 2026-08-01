@@ -1,0 +1,7 @@
+name: GitSync
+version: '${version}'
+main: pl.fanth.gitsync.GitSyncPlugin
+bootstrapper: pl.fanth.gitsync.GitSyncBootstrap
+api-version: '1.21'
+authors: [EpicPlayerA10]
+website: https://fanth.pl
