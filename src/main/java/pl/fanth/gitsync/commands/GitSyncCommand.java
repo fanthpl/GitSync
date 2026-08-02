@@ -26,6 +26,7 @@ import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.git.PackManifest;
 
+import java.io.File;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
@@ -39,7 +40,7 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("sync")
-    @Description("Sync the pack with the remote repository")
+    @Description("Sync the pack with the remote repository. force discards local changes and reloads everything")
     @Syntax("[force]")
     public void sync(CommandSender sender, @Default("false") boolean force) {
         GitSyncService service = GitSyncPlugin.instance().gitSyncService();
@@ -68,6 +69,10 @@ public class GitSyncCommand extends BaseCommand {
         send(sender, "Resetting the repository to HEAD...", NamedTextColor.GREEN);
 
         runAsync(sender, "resetting the repository", git -> {
+            if (!hasGitignore(sender, git)) {
+                return;
+            }
+
             // Delete untracked files too
             git.clean()
                 .setForce(true)
@@ -198,6 +203,10 @@ public class GitSyncCommand extends BaseCommand {
         send(sender, "Creating a commit...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
+            if (!hasGitignore(sender, git)) {
+                return;
+            }
+
             git.add()
                 .addFilepattern(".")
                 .call();
@@ -218,6 +227,22 @@ public class GitSyncCommand extends BaseCommand {
 
             send(sender, "Successfully pushed to the repository!", NamedTextColor.GREEN);
         });
+    }
+
+    /**
+     * The .gitignore is the only thing separating the pack from every other plugin in the folder.
+     * Without it "add ." tracks the whole server and a later reset deletes it again, and clean
+     * takes everything untracked. No command that stages or destroys files may run without it.
+     */
+    private boolean hasGitignore(CommandSender sender, Git git) {
+        if (new File(git.getRepository().getWorkTree(), ".gitignore").isFile()) {
+            return true;
+        }
+
+        send(sender, "Refusing to run: .gitignore is missing from the plugins directory.", NamedTextColor.RED);
+        send(sender, "Without it git would treat every plugin on this server as part of the pack. "
+            + "Run /gitsync sync to regenerate it first.", NamedTextColor.RED);
+        return false;
     }
 
     /** Run a git action off the main thread on the shared repository handle. */

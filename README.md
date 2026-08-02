@@ -10,6 +10,8 @@ You decide what is in the pack. A plugin is synced only once you add it to `pack
 
 The `plugins/` directory *is* the git repository. GitSync creates it on first start, then keeps a `.gitignore` there that ignores everything except the paths declared in `pack.json` - so the repo only ever tracks what you listed, and the rest of `plugins/` stays private to each server.
 
+That `.gitignore` is load bearing. It is what stops git from treating every plugin on the server as part of the pack, so GitSync regenerates it before each sync touches anything, and every command that stages or deletes files (`sync force`, `git commitandpush`, `git resethead`) refuses to run while it is missing.
+
 ```
 plugins/
 ├── .git/                 <- created by GitSync
@@ -20,7 +22,7 @@ plugins/
 └── SomeOtherPlugin/      <- never touched, not in pack.json
 ```
 
-On a normal sync GitSync runs `git pull`, diffs the old and new `HEAD`, and dispatches the reload commands of every plugin whose files appear in that diff. A merge conflict aborts the sync with an error instead of silently discarding anything.
+On a normal sync GitSync runs `git pull`, diffs the old and new `HEAD`, and dispatches the reload commands of every plugin whose files appear in that diff. A merge conflict aborts the sync with an error instead of silently discarding anything - that is what `/gitsync sync force` is for, which resets onto the remote branch and lets it win. Even then only tracked files are touched, so plugins outside `pack.json` cannot be lost.
 
 ## pack.json
 
@@ -91,7 +93,7 @@ All of them need the `gitsync.admin` permission.
 
 | Command | What it does |
 | --- | --- |
-| `/gitsync sync [force]` | Pull now. `force` runs every reload command in `pack.json` even when nothing changed. |
+| `/gitsync sync [force]` | Pull now. `force` takes the remote as-is: local changes to tracked files are overwritten instead of aborting on a conflict, and every reload command in `pack.json` runs even when nothing changed. |
 | `/gitsync status` | Remote, branch, current commit, what the pack contains - and whether the server needs a restart. |
 | `/gitsync reload` | Reload `config.yml` and restart the periodic check. |
 
@@ -120,7 +122,7 @@ The raw git plumbing sits under `/gitsync git` for when a sync needs a closer lo
 | `/gitsync git status` | `git status` of the pack, colour coded per change type. |
 | `/gitsync git showahead` | Commits that exist locally but not on the remote. |
 | `/gitsync git commitandpush <message>` | Commit everything the pack tracks and push it - the way to publish a change made on one server to the others. |
-| `/gitsync git resethead` | `git clean -fd` + `git reset --hard HEAD`. Throws away local edits to tracked files; files outside `pack.json` are ignored, so `clean` leaves them alone. |
+| `/gitsync git resethead` | `git clean -fd` + `git reset --hard HEAD`. Throws away local edits to tracked files; files outside `pack.json` are ignored, so `clean` leaves them alone. Refuses to run at all if the `.gitignore` is missing. |
 
 ## Startup behaviour
 

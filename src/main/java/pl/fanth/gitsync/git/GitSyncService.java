@@ -8,6 +8,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
+import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
@@ -148,9 +149,13 @@ public class GitSyncService {
 
     /**
      * Pull the remote branch and run reload commands for whatever changed.
-     * With force, every reload command from pack.json runs even when nothing changed.
+     * <p>
+     * Force replaces the pull with a hard reset onto the remote branch, so local edits to tracked
+     * files and anything that would conflict are discarded instead of aborting the sync, and every
+     * reload command from pack.json runs even when nothing changed. Untracked files stay untouched,
+     * so plugins outside pack.json are never affected.
      *
-     * @return the repository relative paths that changed, empty when nothing did or the pull failed
+     * @return the repository relative paths that changed, empty when nothing did or the sync failed
      */
     public synchronized Set<String> sync(CommandSender feedback, boolean force) {
         if (this.git == null) {
@@ -166,16 +171,28 @@ public class GitSyncService {
             Repository repository = this.git.getRepository();
             ObjectId before = repository.resolve(Constants.HEAD);
 
-            PullResult result = this.git.pull()
-                    .setRemote(REMOTE)
-                    .setRemoteBranchName(config.branch)
-                    .setCredentialsProvider(credentials())
-                    .call();
+            // Before anything touches the working tree or the index. Without a .gitignore nothing
+            // in plugins/ is ignored, and every unrelated plugin becomes ours to add and delete.
+            if (new File(this.repoDir, "pack.json").isFile()) {
+                writeGitignore(readManifest());
+            }
 
-            if (!result.isSuccessful()) {
-                this.logger.severe("Pull failed: " + describeFailure(result));
-                reply(feedback, "Sync failed: " + describeFailure(result), NamedTextColor.RED);
-                return Set.of();
+            if (force) {
+                if (!resetToRemote(config, feedback)) {
+                    return Set.of();
+                }
+            } else {
+                PullResult result = this.git.pull()
+                        .setRemote(REMOTE)
+                        .setRemoteBranchName(config.branch)
+                        .setCredentialsProvider(credentials())
+                        .call();
+
+                if (!result.isSuccessful()) {
+                    this.logger.severe("Pull failed: " + describeFailure(result));
+                    reply(feedback, "Sync failed: " + describeFailure(result), NamedTextColor.RED);
+                    return Set.of();
+                }
             }
 
             ObjectId after = repository.resolve(Constants.HEAD);
@@ -194,7 +211,7 @@ public class GitSyncService {
             Set<String> changed = (before == null || upToDate) ? Set.of() : changedPaths(repository, before, after);
 
             PackManifest manifest = readManifest();
-            Files.write(new File(this.repoDir, ".gitignore").toPath(), manifest.gitignoreLines(), StandardCharsets.UTF_8);
+            writeGitignore(manifest);
 
             this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
 
@@ -229,6 +246,44 @@ public class GitSyncService {
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
             });
         }
+    }
+
+    /** The file that keeps every plugin outside pack.json invisible to git. */
+    public File gitignoreFile() {
+        return new File(this.repoDir, ".gitignore");
+    }
+
+    private void writeGitignore(PackManifest manifest) throws IOException {
+        Files.write(gitignoreFile().toPath(), manifest.gitignoreLines(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Take the remote branch as-is, discarding whatever the working tree says. A hard reset
+     * overwrites conflicting tracked files instead of refusing like a merge would, and leaves
+     * untracked files alone, so nothing outside the pack can be lost.
+     */
+    private boolean resetToRemote(PluginConfiguration config, CommandSender feedback) throws Exception {
+        // A reset deletes what the index tracks and the target commit lacks. With tracked content
+        // but no .gitignore the index cannot be trusted to hold only the pack, so refuse. A repo
+        // with no commits yet has an empty index, there a reset can only add files.
+        if (this.git.getRepository().resolve(Constants.HEAD) != null && !gitignoreFile().isFile()) {
+            this.logger.severe("Refusing to force sync: .gitignore is missing from " + this.repoDir);
+            reply(feedback, "Refusing to force sync: .gitignore is missing, the repository cannot be "
+                    + "trusted to track only the pack. Restore it or reinitialize the repository.", NamedTextColor.RED);
+            return false;
+        }
+
+        this.git.fetch().setRemote(REMOTE).setCredentialsProvider(credentials()).setRemoveDeletedRefs(true).call();
+
+        ObjectId target = this.git.getRepository().resolve(Constants.R_REMOTES + REMOTE + "/" + config.branch);
+        if (target == null) {
+            reply(feedback, "Remote branch " + config.branch + " not found.", NamedTextColor.RED);
+            return false;
+        }
+
+        this.logger.info("Force sync: resetting onto " + REMOTE + "/" + config.branch + ", local changes to tracked files are discarded.");
+        this.git.reset().setMode(ResetCommand.ResetType.HARD).setRef(target.name()).call();
+        return true;
     }
 
     /** Turn a failed PullResult into something readable in the console. */

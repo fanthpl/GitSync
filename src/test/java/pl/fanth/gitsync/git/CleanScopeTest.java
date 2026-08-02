@@ -27,6 +27,47 @@ class CleanScopeTest {
             }
             """;
 
+    /**
+     * A hard reset does not touch untracked files, it deletes what the index tracks and the
+     * target commit does not have. Without a .gitignore an "add ." makes every unrelated
+     * plugin tracked, and only then does a later reset wipe them.
+     */
+    @Test
+    void resetDeletesWhateverGotTrackedWithoutTheGitignore(@TempDir Path dir) throws Exception {
+        try (Git git = Git.init().setDirectory(dir.toFile()).setInitialBranch("main").call()) {
+            Files.writeString(dir.resolve("pack.json"), PACK);
+            git.add().addFilepattern("pack.json").call();
+            var base = git.commit().setMessage("base").setAuthor("t", "t@t").setCommitter("t", "t@t").setSign(false).call();
+
+            Files.createDirectories(dir.resolve("OtherPlugin"));
+            Files.writeString(dir.resolve("OtherPlugin/config.yml"), "keep: me");
+
+            // Untracked, so the reset leaves it alone
+            git.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef(base.name()).call();
+            assertTrue(Files.exists(dir.resolve("OtherPlugin/config.yml")), "untracked files survive a hard reset");
+
+            // No .gitignore, so "add ." tracks it - now the same reset deletes it
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("oops").setAuthor("t", "t@t").setCommitter("t", "t@t").setSign(false).call();
+            git.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef(base.name()).call();
+
+            assertFalse(Files.exists(dir.resolve("OtherPlugin/config.yml")), "once tracked, a reset wipes it");
+        }
+    }
+
+    /** Why /gitsync git resethead refuses to run without a .gitignore. */
+    @Test
+    void cleanWipesEverythingWithoutTheGitignore(@TempDir Path dir) throws Exception {
+        try (Git git = Git.init().setDirectory(dir.toFile()).setInitialBranch("main").call()) {
+            Files.createDirectories(dir.resolve("OtherPlugin"));
+            Files.writeString(dir.resolve("OtherPlugin/config.yml"), "keep: me");
+
+            git.clean().setForce(true).setCleanDirectories(true).call();
+
+            assertFalse(Files.exists(dir.resolve("OtherPlugin/config.yml")), "nothing is ignored, so nothing survives");
+        }
+    }
+
     @Test
     void cleanKeepsFilesOutsideThePack(@TempDir Path dir) throws Exception {
         try (Git git = Git.init().setDirectory(dir.toFile()).setInitialBranch("main").call()) {
