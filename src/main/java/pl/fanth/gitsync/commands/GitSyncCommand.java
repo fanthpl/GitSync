@@ -21,6 +21,8 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.RemoteRefUpdate;
 import pl.fanth.gitsync.GitSyncPlugin;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
@@ -220,10 +222,30 @@ public class GitSyncCommand extends BaseCommand {
                 send(sender, "Nothing to commit, pushing...", NamedTextColor.YELLOW);
             }
 
-            git.push()
+            Iterable<PushResult> results = git.push()
                 .setRemote("origin")
                 .setCredentialsProvider(GitSyncPlugin.instance().gitSyncService().credentials())
                 .call();
+
+            // JGit does not throw when the remote rejects the push, the status sits on each ref update
+            boolean rejected = false;
+            for (PushResult result : results) {
+                for (RemoteRefUpdate update : result.getRemoteUpdates()) {
+                    if (update.getStatus() == RemoteRefUpdate.Status.OK
+                        || update.getStatus() == RemoteRefUpdate.Status.UP_TO_DATE) {
+                        continue;
+                    }
+
+                    rejected = true;
+                    String reason = update.getMessage() != null ? update.getMessage() : update.getStatus().name();
+                    send(sender, "Push rejected for " + update.getRemoteName() + ": " + reason, NamedTextColor.RED);
+                }
+            }
+
+            if (rejected) {
+                send(sender, "Push failed. The remote most likely has commits you do not have, run /gitsync sync first.", NamedTextColor.RED);
+                return;
+            }
 
             send(sender, "Successfully pushed to the repository!", NamedTextColor.GREEN);
         });
