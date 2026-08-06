@@ -125,11 +125,6 @@ public class PackManifest {
         return commandsOf(getEntriesFor(changedPaths));
     }
 
-    /** Reload commands of every plugin in the pack, in pack.json order. */
-    public List<String> allReloadCommands() {
-        return commandsOf(this.plugins.values());
-    }
-
     /**
      * Changed paths that no reload command can apply, so the server has to be restarted:
      * a plugin jar was added, removed or updated, or a config of a plugin that declares

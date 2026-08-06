@@ -151,9 +151,10 @@ public class GitSyncService {
      * Pull the remote branch and run reload commands for whatever changed.
      * <p>
      * Force replaces the pull with a hard reset onto the remote branch, so local edits to tracked
-     * files and anything that would conflict are discarded instead of aborting the sync, and every
-     * reload command from pack.json runs even when nothing changed. Untracked files stay untouched,
-     * so plugins outside pack.json are never affected.
+     * files and anything that would conflict are discarded instead of aborting the sync. What the
+     * reset restores from the working tree is invisible to a commit diff, so a force sync marks the
+     * server as needing a restart instead of guessing. Untracked files stay untouched, so plugins
+     * outside pack.json are never affected.
      *
      * @return the repository relative paths that changed, empty when nothing did or the sync failed
      */
@@ -218,11 +219,20 @@ public class GitSyncService {
             writeGitignore(manifest);
 
             this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
+            if (force) {
+                // A hard reset also restores files that only drifted in the working tree, and a
+                // commit to commit diff cannot see those. Reloading the whole pack to cover that
+                // blind spot is expensive and still not a guarantee, so say what is actually true.
+                this.restartReasons.put("force sync", "local changes to tracked files were discarded");
+            }
 
-            List<String> commands = force ? manifest.allReloadCommands() : manifest.reloadCommandsFor(changed);
+            List<String> commands = manifest.reloadCommandsFor(changed);
             this.logger.info("Pulled " + after.name().substring(0, 7) + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
             reply(feedback, "Synced " + after.name().substring(0, 7)
                     + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).", NamedTextColor.GREEN);
+            if (!this.restartReasons.isEmpty()) {
+                reply(feedback, "A server restart is required, run /gitsync status for the details.", NamedTextColor.YELLOW);
+            }
 
             runReloadCommands(commands);
             return changed;
