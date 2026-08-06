@@ -174,7 +174,11 @@ public class GitSyncService {
             // Before anything touches the working tree or the index. Without a .gitignore nothing
             // in plugins/ is ignored, and every unrelated plugin becomes ours to add and delete.
             if (new File(this.repoDir, "pack.json").isFile()) {
-                writeGitignore(readManifest());
+                try {
+                    writeGitignore(readManifest());
+                } catch (Exception ex) {
+                    this.logger.log(Level.SEVERE, "Failed to write .gitignore", ex);
+                }
             }
 
             if (force) {
@@ -263,16 +267,6 @@ public class GitSyncService {
      * untracked files alone, so nothing outside the pack can be lost.
      */
     private boolean resetToRemote(PluginConfiguration config, CommandSender feedback) throws Exception {
-        // A reset deletes what the index tracks and the target commit lacks. With tracked content
-        // but no .gitignore the index cannot be trusted to hold only the pack, so refuse. A repo
-        // with no commits yet has an empty index, there a reset can only add files.
-        if (this.git.getRepository().resolve(Constants.HEAD) != null && !gitignoreFile().isFile()) {
-            this.logger.severe("Refusing to force sync: .gitignore is missing from " + this.repoDir);
-            reply(feedback, "Refusing to force sync: .gitignore is missing, the repository cannot be "
-                    + "trusted to track only the pack. Restore it or reinitialize the repository.", NamedTextColor.RED);
-            return false;
-        }
-
         this.git.fetch().setRemote(REMOTE).setCredentialsProvider(credentials()).setRemoveDeletedRefs(true).call();
 
         ObjectId target = this.git.getRepository().resolve(Constants.R_REMOTES + REMOTE + "/" + config.branch);
