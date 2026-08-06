@@ -219,6 +219,12 @@ public class GitSyncService {
             writeGitignore(manifest);
 
             this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
+            if (changed.contains("pack.json")) {
+                // A plugin dropped from the pack is gone from the manifest as well, so nothing
+                // above can match the paths it left behind. Its files disappear from disk while
+                // the server keeps it loaded, and only a restart settles that.
+                this.restartReasons.put("pack.json", "the pack composition changed");
+            }
             if (force) {
                 // A hard reset also restores files that only drifted in the working tree, and a
                 // commit to commit diff cannot see those. Reloading the whole pack to cover that
