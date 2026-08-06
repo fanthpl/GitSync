@@ -219,7 +219,7 @@ public class GitSyncService {
 
             this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
 
-            List<String> commands = manifest.reloadCommandsFor(changed);
+            List<String> commands = force ? manifest.allReloadCommands() : manifest.reloadCommandsFor(changed);
             this.logger.info("Pulled " + after.name().substring(0, 7) + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
             reply(feedback, "Synced " + after.name().substring(0, 7)
                     + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).", NamedTextColor.GREEN);
