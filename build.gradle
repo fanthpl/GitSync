@@ -1,6 +1,6 @@
 plugins {
     id 'java'
-    id "com.gradleup.shadow" version "8.3.6"
+    id "com.gradleup.shadow" version "9.6.1"
 }
 
 group = 'pl.fanth'
@@ -21,7 +21,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly "io.papermc.paper:paper-api:1.21.5-R0.1-SNAPSHOT"
+    compileOnly "io.papermc.paper:paper-api:26.2.build.92-stable"
 
     implementation 'eu.okaeri:okaeri-configs-yaml-bukkit:6.1.0-beta.4'
     implementation 'eu.okaeri:okaeri-configs-serdes-commons:6.1.0-beta.4'
@@ -30,12 +30,12 @@ dependencies {
 
     implementation "co.aikar:acf-paper:0.5.1-SNAPSHOT"
 
-    implementation("org.eclipse.jgit:org.eclipse.jgit:7.7.0.202606012155-r")
+    implementation("org.eclipse.jgit:org.eclipse.jgit:7.7.1.202607240634-r")
 
-    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation platform('org.junit:junit-bom:6.1.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testImplementation 'com.google.code.gson:gson:2.11.0'
+    testImplementation 'com.google.code.gson:gson:2.14.0'
 }
 
 test {
