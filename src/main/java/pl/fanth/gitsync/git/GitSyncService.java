@@ -57,6 +57,7 @@ public class GitSyncService {
 
     private Git git;
     private BukkitTask task;
+    private volatile boolean lastSyncFailed;
 
     /** Bootstrap phase, no server available. */
     public GitSyncService(Path repoDir, Logger logger, Supplier<PluginConfiguration> configSupplier) {
@@ -120,6 +121,11 @@ public class GitSyncService {
 
     public boolean isSyncing() {
         return this.syncing.get();
+    }
+
+    /** True when the last sync did not get past the pull, the console holds the reason. */
+    public boolean lastSyncFailed() {
+        return this.lastSyncFailed;
     }
 
     /** Paths pulled since this boot that a reload command cannot apply, mapped to the reason. */
@@ -200,6 +206,8 @@ public class GitSyncService {
                 }
             }
 
+            this.lastSyncFailed = false;
+
             ObjectId after = repository.resolve(Constants.HEAD);
             if (after == null) {
                 reply(feedback, "The remote repository has no commits yet.", NamedTextColor.YELLOW);
@@ -243,6 +251,7 @@ public class GitSyncService {
             runReloadCommands(commands);
             return changed;
         } catch (Exception exception) {
+            this.lastSyncFailed = true;
             this.logger.log(Level.SEVERE, "Sync failed", exception);
             reply(feedback, "An error occurred while syncing. See the console for details.", NamedTextColor.RED);
             return Set.of();

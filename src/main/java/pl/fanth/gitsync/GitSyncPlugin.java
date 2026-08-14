@@ -1,12 +1,20 @@
 package pl.fanth.gitsync;
 
 import co.aikar.commands.PaperCommandManager;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import pl.fanth.gitsync.commands.GitSyncCommand;
 import pl.fanth.gitsync.config.ConfigurationFactory;
 import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import pl.fanth.gitsync.git.GitSyncService;
+import pl.fanth.gitsync.listeners.PlayerListener;
 
 import java.io.File;
 
@@ -28,6 +36,7 @@ public final class GitSyncPlugin extends JavaPlugin {
         this.gitSyncService.start();
 
         registerCommands();
+        getServer().getPluginManager().registerEvents(new PlayerListener(), this);
     }
 
     @Override

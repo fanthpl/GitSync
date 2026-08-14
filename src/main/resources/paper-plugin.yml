@@ -5,3 +5,9 @@ bootstrapper: pl.fanth.gitsync.GitSyncBootstrap
 api-version: '1.21'
 authors: [EpicPlayerA10]
 website: https://fanth.pl
+
+permissions:
+  gitsync.admin:
+    default: op
+  gitsync.notify:
+    default: op
