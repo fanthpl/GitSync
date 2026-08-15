@@ -240,10 +240,18 @@ public class GitSyncService {
                 this.restartReasons.put("force sync", "local changes to tracked files were discarded");
             }
 
-            List<String> commands = manifest.reloadCommandsFor(changed);
+            // Once the pack composition changed, the loaded plugins no longer match what is on disk,
+            // so reloading anything is guesswork. Stays off for every later sync too, until a restart.
+            boolean packChanged = this.restartReasons.containsKey("pack.json");
+            List<String> commands = packChanged ? List.of() : manifest.reloadCommandsFor(changed);
+
             this.logger.info("Pulled " + after.name().substring(0, 7) + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
             reply(feedback, "Synced " + after.name().substring(0, 7)
                     + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).", NamedTextColor.GREEN);
+            if (packChanged) {
+                this.logger.info("pack.json changed, reload commands are disabled until the server restarts.");
+                reply(feedback, "pack.json changed, no plugin will be reloaded until the server restarts.", NamedTextColor.YELLOW);
+            }
             if (!this.restartReasons.isEmpty()) {
                 reply(feedback, "A server restart is required, run /gitsync status for the details.", NamedTextColor.YELLOW);
             }

@@ -216,6 +216,8 @@ public class GitSyncCommand extends BaseCommand {
             if (!git.status().call().isClean()) {
                 git.commit()
                     .setMessage(message)
+                    // Whoever ran the command owns the commit, the repository identity stays the committer
+                    .setAuthor(sender.getName(), sender.getName().toLowerCase() + "@minecraft.server.null")
                     .call();
                 send(sender, "Commit created! Pushing...", NamedTextColor.GREEN);
             } else {
