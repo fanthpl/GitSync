@@ -9,6 +9,7 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.errors.CheckoutConflictException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
@@ -173,7 +174,7 @@ public class GitSyncService {
         this.syncing.set(true);
         PluginConfiguration config = this.configSupplier.get();
         try {
-            configureRemote(config);
+            configureRepository(config);
 
             Repository repository = this.git.getRepository();
             ObjectId before = repository.resolve(Constants.HEAD);
@@ -200,8 +201,8 @@ public class GitSyncService {
                         .call();
 
                 if (!result.isSuccessful()) {
-                    this.logger.severe("Pull failed: " + describeFailure(result));
-                    reply(feedback, "Sync failed: " + describeFailure(result), NamedTextColor.RED);
+                    this.lastSyncFailed = true;
+                    reportConflicts(feedback, conflictsOf(result.getMergeResult()), mergeStatusOf(result));
                     return Set.of();
                 }
             }
@@ -258,6 +259,12 @@ public class GitSyncService {
 
             runReloadCommands(commands);
             return changed;
+        } catch (CheckoutConflictException exception) {
+            // JGit throws this instead of returning a failed PullResult when local edits to tracked
+            // files would be overwritten, so the paths only exist on the exception
+            this.lastSyncFailed = true;
+            reportConflicts(feedback, new LinkedHashSet<>(exception.getConflictingPaths()), "CHECKOUT_CONFLICT");
+            return Set.of();
         } catch (Exception exception) {
             this.lastSyncFailed = true;
             this.logger.log(Level.SEVERE, "Sync failed", exception);
@@ -313,21 +320,40 @@ public class GitSyncService {
         return true;
     }
 
-    /** Turn a failed PullResult into something readable in the console. */
-    private String describeFailure(PullResult result) {
-        MergeResult merge = result.getMergeResult();
+    /** Both the merged-with-conflict paths and the ones a checkout refused to overwrite. */
+    private Set<String> conflictsOf(MergeResult merge) {
+        Set<String> paths = new LinkedHashSet<>();
         if (merge == null) {
-            return String.valueOf(result);
+            return paths;
         }
-        if (merge.getConflicts() != null && !merge.getConflicts().isEmpty()) {
-            return "merge conflict in " + String.join(", ", merge.getConflicts().keySet())
-                    + " - resolve it manually in the plugins directory.";
+        if (merge.getConflicts() != null) {
+            paths.addAll(merge.getConflicts().keySet());
         }
-        if (merge.getCheckoutConflicts() != null && !merge.getCheckoutConflicts().isEmpty()) {
-            return "local files would be overwritten: " + String.join(", ", merge.getCheckoutConflicts())
-                    + " - move or delete them, or commit them first.";
+        if (merge.getCheckoutConflicts() != null) {
+            paths.addAll(merge.getCheckoutConflicts());
         }
-        return merge.getMergeStatus().toString();
+        return paths;
+    }
+
+    private String mergeStatusOf(PullResult result) {
+        MergeResult merge = result.getMergeResult();
+        return merge != null ? merge.getMergeStatus().toString() : String.valueOf(result);
+    }
+
+    /** Name the files that blocked the pull, one per line so chat stays readable. */
+    private void reportConflicts(CommandSender feedback, Set<String> conflicts, String status) {
+        if (conflicts.isEmpty()) {
+            this.logger.severe("Pull failed: " + status);
+            reply(feedback, "Sync failed: " + status, NamedTextColor.RED);
+            return;
+        }
+
+        this.logger.severe("Pull failed (" + status + "), conflicting files: " + String.join(", ", conflicts));
+        reply(feedback, "Sync failed, " + conflicts.size() + " conflicting file(s):", NamedTextColor.RED);
+        for (String path : conflicts) {
+            reply(feedback, "  " + path, NamedTextColor.DARK_RED);
+        }
+        reply(feedback, "Resolve them in the plugins directory, or run /gitsync sync force to discard local changes.", NamedTextColor.YELLOW);
     }
 
     /** Defaults applied once, when the repository is created. */
@@ -346,10 +372,15 @@ public class GitSyncService {
         stored.save();
     }
 
-    private void configureRemote(PluginConfiguration config) throws IOException {
+    /** Applied on every sync, so repositories created before a setting existed pick it up too. */
+    private void configureRepository(PluginConfiguration config) throws IOException {
         StoredConfig stored = this.git.getRepository().getConfig();
         stored.setString("remote", REMOTE, "url", config.remote);
         stored.setString("remote", REMOTE, "fetch", "+refs/heads/*:" + Constants.R_REMOTES + REMOTE + "/*");
+        // Everything is stored and checked out as LF, on Windows too. A config saved with CRLF by
+        // an editor is normalized back on staging, so it never shows up as a whole file diff, and
+        // the Windows and Linux servers sharing this repository can never disagree about it.
+        stored.setString("core", null, "autocrlf", "input");
         stored.save();
     }
 
