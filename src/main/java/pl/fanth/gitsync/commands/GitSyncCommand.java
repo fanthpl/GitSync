@@ -3,47 +3,46 @@ package pl.fanth.gitsync.commands;
 import co.aikar.commands.BaseCommand;
 import co.aikar.commands.CommandHelp;
 import co.aikar.commands.annotation.CommandAlias;
+import co.aikar.commands.annotation.CommandCompletion;
 import co.aikar.commands.annotation.CommandPermission;
-import co.aikar.commands.annotation.Default;
 import co.aikar.commands.annotation.Description;
 import co.aikar.commands.annotation.HelpCommand;
 import co.aikar.commands.annotation.Optional;
 import co.aikar.commands.annotation.Subcommand;
 import co.aikar.commands.annotation.Syntax;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.ResetCommand;
-import org.eclipse.jgit.api.Status;
-import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.diff.EditList;
+import org.eclipse.jgit.diff.HistogramDiff;
+import org.eclipse.jgit.diff.RawText;
 import org.eclipse.jgit.diff.RawTextComparator;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.transport.PushResult;
-import org.eclipse.jgit.transport.RemoteRefUpdate;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
-import org.eclipse.jgit.treewalk.FileTreeIterator;
-import org.eclipse.jgit.treewalk.filter.PathFilterGroup;
 import pl.fanth.gitsync.GitSyncPlugin;
+import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
+import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.git.PackManifest;
+import pl.fanth.gitsync.git.PackRenderer;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.logging.Level;
 
 @CommandAlias("gitsync")
@@ -58,9 +57,18 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("sync")
-    @Description("Sync the pack with the remote repository. force discards local changes and reloads everything")
-    @Syntax("[force]")
-    public void sync(CommandSender sender, @Default("false") boolean force) {
+    @Description("Sync the pack with the remote repository. --force overwrites the edits made on this server")
+    @Syntax("[--force]")
+    @CommandCompletion("--force")
+    public void sync(CommandSender sender, @Optional String option) {
+        // Spelled out rather than taken as a boolean: ACF only reads true/yes/on/1 as true, so a
+        // mistyped flag would silently turn into a plain sync
+        boolean force = option != null && (option.equalsIgnoreCase("--force") || option.equalsIgnoreCase("force"));
+        if (option != null && !force) {
+            send(sender, "Unknown option " + option + ", did you mean --force?", NamedTextColor.RED);
+            return;
+        }
+
         GitSyncService service = GitSyncPlugin.instance().gitSyncService();
         if (service.isSyncing()) {
             send(sender, "A sync is already in progress!", NamedTextColor.RED);
@@ -82,28 +90,12 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("git resethead")
-    @Description("Reset the repository to HEAD (git reset --hard HEAD)")
+    @Description("Throw away the local edits and render the pack over them again")
     public void resetHead(CommandSender sender) {
-        send(sender, "Resetting the repository to HEAD...", NamedTextColor.GREEN);
+        send(sender, "Restoring the pack...", NamedTextColor.GREEN);
 
-        runAsync(sender, "resetting the repository", git -> {
-            if (!hasGitignore(sender, git)) {
-                return;
-            }
-
-            // Delete untracked files too
-            git.clean()
-                .setForce(true)
-                .setCleanDirectories(true)
-                .call();
-
-            git.reset()
-                .setMode(ResetCommand.ResetType.HARD)
-                .setRef(Constants.HEAD)
-                .call();
-
-            send(sender, "Successfully reset the repository to HEAD!", NamedTextColor.GREEN);
-        });
+        runAsync(sender, "restoring the pack", git ->
+                GitSyncPlugin.instance().gitSyncService().resetRender(sender));
     }
 
     @Subcommand("status")
@@ -111,6 +103,7 @@ public class GitSyncCommand extends BaseCommand {
     public void status(CommandSender sender) {
         GitSyncService service = GitSyncPlugin.instance().gitSyncService();
         PluginConfiguration config = GitSyncPlugin.instance().pluginConfiguration();
+        ServerConfiguration server = GitSyncPlugin.instance().serverConfiguration();
 
         runAsync(sender, "reading the pack state", git -> {
             Repository repo = git.getRepository();
@@ -120,8 +113,13 @@ public class GitSyncCommand extends BaseCommand {
             field(sender, "Remote", config.remote.isBlank() ? "<not configured>" : config.remote);
             field(sender, "Branch", repo.getBranch());
             field(sender, "Commit", describeHead(repo));
+            field(sender, "Layers", String.join(" -> ", service.renderer().layers()));
             field(sender, "Pack", manifest.plugins.size() + " plugin(s): " + String.join(", ", manifest.plugins.keySet()));
             field(sender, "Auto sync", "every " + config.checkIntervalSeconds + "s" + (service.isSyncing() ? " (running now)" : ""));
+
+            if (server.role.isBlank()) {
+                send(sender, "No role set in server.yml, only base/ is rendered.", NamedTextColor.YELLOW);
+            }
 
             Map<String, String> reasons = service.restartReasons();
             if (reasons.isEmpty()) {
@@ -156,137 +154,123 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("git status")
-    @Description("Show the working tree state (git status)")
+    @Description("Show which synced files were edited on this server")
     public void gitStatus(CommandSender sender) {
-        send(sender, "Checking the repository status...", NamedTextColor.GREEN);
+        send(sender, "Checking for local edits...", NamedTextColor.GREEN);
 
-        runAsync(sender, "checking the repository status", git -> {
-            Status status = git.status().call();
+        runAsync(sender, "checking for local edits", git -> {
+            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+            List<PackRenderer.LocalChange> changes = service.localChanges();
+            List<String> unknown = service.unknownJars();
 
-            if (status.isClean()) {
-                send(sender, "No changes in the repository.", NamedTextColor.GREEN);
+            if (changes.isEmpty() && unknown.isEmpty()) {
+                send(sender, "No local edits, this server matches the pack.", NamedTextColor.GREEN);
                 return;
             }
 
-            send(sender, "--- Repository status ---", NamedTextColor.GOLD);
-            listFiles(sender, status.getChanged(), "[M] ", NamedTextColor.YELLOW);
-            listFiles(sender, status.getModified(), "[M] ", NamedTextColor.YELLOW);
-            listFiles(sender, status.getAdded(), "[A] ", NamedTextColor.GREEN);
-            listFiles(sender, status.getRemoved(), "[D] ", NamedTextColor.RED);
-            listFiles(sender, status.getMissing(), "[D] ", NamedTextColor.RED);
-            listFiles(sender, status.getConflicting(), "[C] ", NamedTextColor.DARK_RED);
-            listFiles(sender, status.getUntracked(), "[?] ", NamedTextColor.GRAY);
+            send(sender, "--- Local edits ---", NamedTextColor.GOLD);
+            for (PackRenderer.LocalChange change : changes) {
+                sender.sendMessage(Component.text(prefixOf(change.kind())).color(colorOf(change.kind()))
+                    .append(Component.text(change.logicalPath()).color(NamedTextColor.WHITE))
+                    .append(Component.text(" -> " + change.targetLayer()).color(NamedTextColor.GRAY)));
+            }
+            for (String jar : unknown) {
+                sender.sendMessage(Component.text("[?] ").color(NamedTextColor.GRAY)
+                    .append(Component.text(jar).color(NamedTextColor.WHITE))
+                    .append(Component.text(" (not in the pack)").color(NamedTextColor.GRAY)));
+            }
         });
     }
 
+    private String prefixOf(PackRenderer.Kind kind) {
+        return switch (kind) {
+            case NEW -> "[A] ";
+            case MODIFIED -> "[M] ";
+            case DELETED -> "[D] ";
+        };
+    }
+
+    private NamedTextColor colorOf(PackRenderer.Kind kind) {
+        return switch (kind) {
+            case NEW -> NamedTextColor.GREEN;
+            case MODIFIED -> NamedTextColor.YELLOW;
+            case DELETED -> NamedTextColor.RED;
+        };
+    }
+
     @Subcommand("git diff")
-    @Description("Show what differs between the last commit and the files on disk (git diff HEAD)")
+    @Description("Show what differs between the pack and the files on this server")
     @Syntax("[path]")
     public void gitDiff(CommandSender sender, @Optional String path) {
         send(sender, "Building the diff...", NamedTextColor.GREEN);
 
         runAsync(sender, "building the diff", git -> {
-            Repository repo = git.getRepository();
-            ObjectId head = repo.resolve(Constants.HEAD);
-            if (head == null) {
-                send(sender, "Nothing has been committed yet.", NamedTextColor.RED);
-                return;
-            }
+            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+            PackRenderer renderer = service.renderer();
+            Map<String, String> plan = renderer.plan(service.manifest());
 
-            // Status is the only thing here that honors .gitignore, so it decides which paths the
-            // formatter may look at. Handed the working tree directly it reports every unrelated
-            // plugin on the server as newly added.
-            Set<String> paths = changedPaths(git.status().call());
+            List<PackRenderer.LocalChange> changes = new ArrayList<>(service.localChanges());
             if (path != null) {
                 String prefix = path.endsWith("/") ? path : path + "/";
-                paths.removeIf(file -> !file.equals(path) && !file.startsWith(prefix));
+                changes.removeIf(change -> !change.logicalPath().equals(path) && !change.logicalPath().startsWith(prefix));
             }
 
-            if (paths.isEmpty()) {
-                send(sender, path == null ? "No changes." : "No changes under " + path + ".", NamedTextColor.GREEN);
+            if (changes.isEmpty()) {
+                send(sender, path == null ? "No local edits." : "No local edits under " + path + ".", NamedTextColor.GREEN);
                 return;
             }
 
-            try (ObjectReader reader = repo.newObjectReader();
-                 RevWalk walk = new RevWalk(repo);
-                 ByteArrayOutputStream out = new ByteArrayOutputStream();
-                 DiffFormatter formatter = new DiffFormatter(out)) {
-                CanonicalTreeParser headTree = new CanonicalTreeParser();
-                headTree.reset(reader, walk.parseCommit(head).getTree());
+            send(sender, "--- Diff against the pack ---", NamedTextColor.GOLD);
 
-                formatter.setRepository(repo);
-                // Kills the line ending churn: a file that only swapped CRLF for LF produces no hunk
-                formatter.setDiffComparator(RawTextComparator.WS_IGNORE_TRAILING);
-                formatter.setPathFilter(PathFilterGroup.createFromStrings(paths));
-                formatter.setContext(2);
+            int budget = DIFF_LINE_LIMIT;
+            int truncated = 0;
+            for (PackRenderer.LocalChange change : changes) {
+                byte[] packed = renderer.renderedBytes(plan, change.logicalPath());
+                Path file = renderer.pluginsFile(change.logicalPath());
+                byte[] local = Files.isRegularFile(file) ? Files.readAllBytes(file) : new byte[0];
+                if (packed == null) {
+                    packed = new byte[0];
+                }
 
-                send(sender, "--- Diff against " + head.name().substring(0, 7) + " ---", NamedTextColor.GOLD);
+                send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
+                if (RawText.isBinary(packed) || RawText.isBinary(local)) {
+                    send(sender, "  (binary)", NamedTextColor.GRAY);
+                    continue;
+                }
 
-                int budget = DIFF_LINE_LIMIT;
-                int truncated = 0;
-                int unchanged = 0;
-                for (DiffEntry entry : formatter.scan(headTree, new FileTreeIterator(repo))) {
-                    out.reset();
-                    formatter.format(entry);
-                    formatter.flush();
-
-                    String raw = out.toString(StandardCharsets.UTF_8);
-                    List<String> hunks = hunkLines(raw);
-                    String file = entry.getChangeType() == DiffEntry.ChangeType.DELETE ? entry.getOldPath() : entry.getNewPath();
-
-                    if (hunks.isEmpty()) {
-                        // A jar has no lines to show, but it very much did change
-                        if (raw.contains("Binary files") || raw.contains("GIT binary patch")) {
-                            send(sender, entry.getChangeType() + " " + file + " (binary)", NamedTextColor.AQUA);
-                        } else {
-                            unchanged++;
-                        }
+                for (String line : hunksOf(packed, local)) {
+                    if (budget-- <= 0) {
+                        truncated++;
                         continue;
                     }
-
-                    send(sender, entry.getChangeType() + " " + file, NamedTextColor.AQUA);
-
-                    for (String line : hunks) {
-                        if (budget-- <= 0) {
-                            truncated++;
-                            continue;
-                        }
-                        sender.sendMessage(Component.text(shorten(line)).color(diffColor(line)));
-                    }
+                    sender.sendMessage(Component.text(shorten(line)).color(diffColor(line)));
                 }
+            }
 
-                if (unchanged > 0) {
-                    send(sender, unchanged + " file(s) differ only in line endings or whitespace.", NamedTextColor.GRAY);
-                }
-                if (truncated > 0) {
-                    send(sender, "... " + truncated + " more line(s), narrow it down with /gitsync git diff <path>", NamedTextColor.GRAY);
-                }
+            if (truncated > 0) {
+                send(sender, "... " + truncated + " more line(s), narrow it down with /gitsync git diff <path>", NamedTextColor.GRAY);
             }
         });
     }
 
-    /** Everything git considers changed, minus whatever .gitignore hides. */
-    private Set<String> changedPaths(Status status) {
-        Set<String> paths = new LinkedHashSet<>();
-        paths.addAll(status.getChanged());
-        paths.addAll(status.getModified());
-        paths.addAll(status.getAdded());
-        paths.addAll(status.getRemoved());
-        paths.addAll(status.getMissing());
-        paths.addAll(status.getUntracked());
-        paths.addAll(status.getConflicting());
-        return paths;
-    }
+    /** The hunks between what the pack holds and what sits on disk, headers left out. */
+    private List<String> hunksOf(byte[] packed, byte[] local) throws Exception {
+        RawText oldText = new RawText(packed);
+        RawText newText = new RawText(local);
+        // Kills the line ending churn: a file that only swapped CRLF for LF produces no hunk
+        EditList edits = new HistogramDiff().diff(RawTextComparator.WS_IGNORE_TRAILING, oldText, newText);
 
-    /** The hunks only, the git headers above them say nothing a chat reader needs. */
-    private List<String> hunkLines(String diff) {
-        List<String> lines = new ArrayList<>();
-        for (String line : diff.split("\n")) {
-            if (!lines.isEmpty() || line.startsWith("@@")) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream(); DiffFormatter formatter = new DiffFormatter(out)) {
+            formatter.setContext(2);
+            formatter.format(edits, oldText, newText);
+            formatter.flush();
+
+            List<String> lines = new ArrayList<>();
+            for (String line : out.toString(StandardCharsets.UTF_8).split("\n")) {
                 lines.add(line.stripTrailing());
             }
+            return lines;
         }
-        return lines;
     }
 
     private NamedTextColor diffColor(String line) {
@@ -340,74 +324,72 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     @Subcommand("git commitandpush")
-    @Description("Commit the current changes and push them (git commit -m <message> & git push)")
+    @Description("Publish the edits made on this server back to the pack")
     @Syntax("<message>")
     public void commitAndPush(CommandSender sender, String message) {
-        send(sender, "Creating a commit...", NamedTextColor.GREEN);
+        send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
-            if (!hasGitignore(sender, git)) {
-                return;
-            }
-
-            git.add()
-                .addFilepattern(".")
-                .call();
-
-            if (!git.status().call().isClean()) {
-                git.commit()
-                    .setMessage(message)
-                    // Whoever ran the command owns the commit, the repository identity stays the committer
-                    .setAuthor(sender.getName(), sender.getName().toLowerCase() + "@minecraft.server.null")
-                    .call();
-                send(sender, "Commit created! Pushing...", NamedTextColor.GREEN);
-            } else {
-                send(sender, "Nothing to commit, pushing...", NamedTextColor.YELLOW);
-            }
-
-            Iterable<PushResult> results = git.push()
-                .setRemote("origin")
-                .setCredentialsProvider(GitSyncPlugin.instance().gitSyncService().credentials())
-                .call();
-
-            // JGit does not throw when the remote rejects the push, the status sits on each ref update
-            boolean rejected = false;
-            for (PushResult result : results) {
-                for (RemoteRefUpdate update : result.getRemoteUpdates()) {
-                    if (update.getStatus() == RemoteRefUpdate.Status.OK
-                        || update.getStatus() == RemoteRefUpdate.Status.UP_TO_DATE) {
-                        continue;
-                    }
-
-                    rejected = true;
-                    String reason = update.getMessage() != null ? update.getMessage() : update.getStatus().name();
-                    send(sender, "Push rejected for " + update.getRemoteName() + ": " + reason, NamedTextColor.RED);
-                }
-            }
-
-            if (rejected) {
-                send(sender, "Push failed. The remote most likely has commits you do not have, run /gitsync sync first.", NamedTextColor.RED);
-                return;
-            }
-
-            send(sender, "Successfully pushed to the repository!", NamedTextColor.GREEN);
+            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+            service.commitAndPush(sender, message);
+            askAboutNewPlugins(sender, service.unknownJars());
         });
     }
 
     /**
-     * The .gitignore is the only thing separating the pack from every other plugin in the folder.
-     * Without it "add ." tracks the whole server and a later reset deletes it again, and clean
-     * takes everything untracked. No command that stages or destroys files may run without it.
+     * A jar nobody declared cannot be placed for the admin: base is every server, the role layer is
+     * every server of this kind, and the instance layer is this one alone. So ask, and let the
+     * answer be a click.
      */
-    private boolean hasGitignore(CommandSender sender, Git git) {
-        if (new File(git.getRepository().getWorkTree(), ".gitignore").isFile()) {
-            return true;
+    private void askAboutNewPlugins(CommandSender sender, List<String> jars) {
+        if (jars.isEmpty()) {
+            return;
         }
 
-        send(sender, "Refusing to run: .gitignore is missing from the plugins directory.", NamedTextColor.RED);
-        send(sender, "Without it git would treat every plugin on this server as part of the pack. "
-            + "Run /gitsync sync to regenerate it first.", NamedTextColor.RED);
-        return false;
+        if (!(sender instanceof Player)) {
+            send(sender, jars.size() + " plugin(s) in plugins/ are not part of the pack: "
+                + String.join(", ", jars), NamedTextColor.YELLOW);
+            send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
+            return;
+        }
+
+        ServerConfiguration server = GitSyncPlugin.instance().serverConfiguration();
+        for (String jar : jars) {
+            sender.sendMessage(Component.text("Detected a new plugin: ").color(NamedTextColor.GOLD)
+                .append(Component.text(jar).color(NamedTextColor.WHITE)));
+
+            Component buttons = layerButton(sender, jar, "base", "every server in the network");
+            if (!server.role.isBlank()) {
+                buttons = buttons.append(Component.space())
+                    .append(layerButton(sender, jar, "role/" + server.role, "every " + server.role + " server"));
+            }
+            if (!server.instance.isBlank()) {
+                buttons = buttons.append(Component.space())
+                    .append(layerButton(sender, jar, "instance/" + server.instance, "this server only"));
+            }
+            sender.sendMessage(buttons.append(Component.space()).append(ignoreButton(sender, jar)));
+        }
+    }
+
+    private Component layerButton(CommandSender sender, String jar, String layer, String meaning) {
+        return Component.text("[" + layer + "]").color(NamedTextColor.GREEN)
+            .hoverEvent(HoverEvent.showText(Component.text("Add " + jar + " to " + layer + " - " + meaning)))
+            .clickEvent(ClickEvent.callback(audience -> runAsync(sender, "adding the plugin to the pack", git ->
+                GitSyncPlugin.instance().gitSyncService().addPluginToPack(sender, jar, layer))));
+    }
+
+    private Component ignoreButton(CommandSender sender, String jar) {
+        String wildcard = PackRenderer.deriveWildcard(jar);
+        return Component.text("[ignore]").color(NamedTextColor.GRAY)
+            .hoverEvent(HoverEvent.showText(Component.text("Keep " + wildcard + " private to this server")))
+            .clickEvent(ClickEvent.callback(audience -> {
+                DataConfiguration data = GitSyncPlugin.instance().dataConfiguration();
+                if (!data.ignoredPluginWildcards.contains(wildcard)) {
+                    data.ignoredPluginWildcards.add(wildcard);
+                    data.save();
+                }
+                send(sender, wildcard + " stays private to this server.", NamedTextColor.GRAY);
+            }));
     }
 
     /** Run a git action off the main thread on the shared repository handle. */
@@ -427,12 +409,6 @@ public class GitSyncCommand extends BaseCommand {
                 plugin.getLogger().log(Level.SEVERE, "An error occurred while " + what + "!", exception);
             }
         });
-    }
-
-    private void listFiles(CommandSender sender, Set<String> files, String prefix, NamedTextColor color) {
-        for (String file : files) {
-            sender.sendMessage(Component.text(prefix).color(color).append(Component.text(file).color(NamedTextColor.WHITE)));
-        }
     }
 
     private void send(CommandSender sender, String message, NamedTextColor color) {

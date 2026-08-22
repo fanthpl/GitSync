@@ -5,6 +5,7 @@ import io.papermc.paper.plugin.bootstrap.PluginBootstrap;
 import org.jetbrains.annotations.NotNull;
 import pl.fanth.gitsync.config.ConfigurationFactory;
 import pl.fanth.gitsync.config.PluginConfiguration;
+import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
 
 import java.io.File;
@@ -37,8 +38,10 @@ public class GitSyncBootstrap implements PluginBootstrap {
             return;
         }
 
-        // The repository is the plugins/ directory itself
-        GitSyncService service = new GitSyncService(dataDirectory.getParent(), LOGGER, () -> config);
+        ServerConfiguration server = ConfigurationFactory.createConfiguration(
+                ServerConfiguration.class, new File(dataDirectory.toFile(), "server.yml"), LOGGER);
+
+        GitSyncService service = new GitSyncService(dataDirectory, LOGGER, () -> config, () -> server);
         try {
             if (!service.open()) {
                 return;

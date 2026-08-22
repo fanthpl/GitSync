@@ -1,5 +1,7 @@
 package pl.fanth.gitsync.git;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -9,27 +11,24 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.api.ResetCommand;
-import org.eclipse.jgit.api.errors.CheckoutConflictException;
-import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.StoredConfig;
-import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.RemoteRefUpdate;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
-import org.eclipse.jgit.treewalk.AbstractTreeIterator;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
-import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import pl.fanth.gitsync.GitSyncPlugin;
 import pl.fanth.gitsync.config.PluginConfiguration;
+import pl.fanth.gitsync.config.ServerConfiguration;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,10 +45,14 @@ import java.util.logging.Logger;
  */
 public class GitSyncService {
     private static final String REMOTE = "origin";
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    private final File repoDir;
+    private final Path packDir;
+    private final Path pluginsDir;
+    private final Path stateFile;
     private final Logger logger;
     private final Supplier<PluginConfiguration> configSupplier;
+    private final Supplier<ServerConfiguration> serverSupplier;
     private final GitSyncPlugin plugin;
 
     private final AtomicBoolean syncing = new AtomicBoolean();
@@ -61,20 +64,25 @@ public class GitSyncService {
     private volatile boolean lastSyncFailed;
 
     /** Bootstrap phase, no server available. */
-    public GitSyncService(Path repoDir, Logger logger, Supplier<PluginConfiguration> configSupplier) {
-        this(repoDir, logger, configSupplier, null);
+    public GitSyncService(Path dataDirectory, Logger logger, Supplier<PluginConfiguration> configSupplier,
+                          Supplier<ServerConfiguration> serverSupplier) {
+        this(dataDirectory, logger, configSupplier, serverSupplier, null);
     }
 
     /** Runtime, the server is up so reload commands and the periodic check can run. */
     public GitSyncService(GitSyncPlugin plugin) {
-        // The repository lives in the plugins/ directory itself
-        this(plugin.getDataFolder().getParentFile().toPath(), plugin.getLogger(), plugin::pluginConfiguration, plugin);
+        this(plugin.getDataFolder().toPath(), plugin.getLogger(), plugin::pluginConfiguration,
+                plugin::serverConfiguration, plugin);
     }
 
-    private GitSyncService(Path repoDir, Logger logger, Supplier<PluginConfiguration> configSupplier, GitSyncPlugin plugin) {
-        this.repoDir = repoDir.toFile();
+    private GitSyncService(Path dataDirectory, Logger logger, Supplier<PluginConfiguration> configSupplier,
+                           Supplier<ServerConfiguration> serverSupplier, GitSyncPlugin plugin) {
+        this.packDir = dataDirectory.resolve("pack");
+        this.pluginsDir = dataDirectory.getParent();
+        this.stateFile = dataDirectory.resolve("render-state.json");
         this.logger = logger;
         this.configSupplier = configSupplier;
+        this.serverSupplier = serverSupplier;
         this.plugin = plugin;
     }
 
@@ -86,18 +94,37 @@ public class GitSyncService {
             return false;
         }
 
+        warnAboutOldRepository();
+
         try {
-            this.git = Git.open(this.repoDir);
+            this.git = Git.open(this.packDir.toFile());
         } catch (IOException exception) {
             try {
-                this.git = Git.init().setDirectory(this.repoDir).setInitialBranch(config.branch).call();
+                Files.createDirectories(this.packDir);
+                this.git = Git.init().setDirectory(this.packDir.toFile()).setInitialBranch(config.branch).call();
                 initRepositoryConfig();
             } catch (Exception initException) {
-                this.logger.log(Level.SEVERE, "Could not initialize the git repository in " + this.repoDir, initException);
+                this.logger.log(Level.SEVERE, "Could not initialize the git repository in " + this.packDir, initException);
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * Older versions made plugins/ itself the repository. Both can sit on disk at once without
+     * breaking anything, but only one of them is being synced, and that is worth saying out loud.
+     */
+    private void warnAboutOldRepository() {
+        if (!Files.isDirectory(this.pluginsDir.resolve(".git"))) {
+            return;
+        }
+        this.logger.severe("=".repeat(70));
+        this.logger.severe("plugins/.git is left over from an older GitSync. The pack now lives in");
+        this.logger.severe(this.packDir + " and plugins/ is rendered from it.");
+        this.logger.severe("Move the files in the remote repository under base/ (or role/<role>/),");
+        this.logger.severe("then delete plugins/.git and plugins/.gitignore by hand.");
+        this.logger.severe("=".repeat(70));
     }
 
     public void start() {
@@ -134,7 +161,7 @@ public class GitSyncService {
         return new LinkedHashMap<>(this.restartReasons);
     }
 
-    /** The pack as it currently sits on disk, empty when there is no readable pack.json. */
+    /** The pack as it currently sits in the repository, empty when there is no readable pack.json. */
     public PackManifest manifest() {
         try {
             return readManifest();
@@ -142,6 +169,12 @@ public class GitSyncService {
             this.logger.log(Level.WARNING, "Could not read pack.json", exception);
             return new PackManifest();
         }
+    }
+
+    /** Renders the layers this server subscribes to. */
+    public PackRenderer renderer() {
+        ServerConfiguration server = this.serverSupplier.get();
+        return new PackRenderer(this.packDir, this.pluginsDir, server.role, server.instance);
     }
 
     /** The shared repository handle, null until open() succeeds. Do not close it. */
@@ -155,15 +188,11 @@ public class GitSyncService {
     }
 
     /**
-     * Pull the remote branch and run reload commands for whatever changed.
-     * <p>
-     * Force replaces the pull with a hard reset onto the remote branch, so local edits to tracked
-     * files and anything that would conflict are discarded instead of aborting the sync. What the
-     * reset restores from the working tree is invisible to a commit diff, so a force sync marks the
-     * server as needing a restart instead of guessing. Untracked files stay untouched, so plugins
-     * outside pack.json are never affected.
+     * Pull the remote branch, render the layers into plugins/ and run reload commands for whatever
+     * changed. A file edited on this server since the last render blocks the whole sync instead of
+     * being overwritten, unless force says the pack wins.
      *
-     * @return the repository relative paths that changed, empty when nothing did or the sync failed
+     * @return the logical paths that changed, empty when nothing did or the sync failed
      */
     public synchronized Set<String> sync(CommandSender feedback, boolean force) {
         if (this.git == null) {
@@ -175,19 +204,6 @@ public class GitSyncService {
         PluginConfiguration config = this.configSupplier.get();
         try {
             configureRepository(config);
-
-            Repository repository = this.git.getRepository();
-            ObjectId before = repository.resolve(Constants.HEAD);
-
-            // Before anything touches the working tree or the index. Without a .gitignore nothing
-            // in plugins/ is ignored, and every unrelated plugin becomes ours to add and delete.
-            if (new File(this.repoDir, "pack.json").isFile()) {
-                try {
-                    writeGitignore(readManifest());
-                } catch (Exception ex) {
-                    this.logger.log(Level.SEVERE, "Failed to write .gitignore", ex);
-                }
-            }
 
             if (force) {
                 if (!resetToRemote(config, feedback)) {
@@ -209,45 +225,49 @@ public class GitSyncService {
 
             this.lastSyncFailed = false;
 
-            ObjectId after = repository.resolve(Constants.HEAD);
-            if (after == null) {
-                reply(feedback, "The remote repository has no commits yet.", NamedTextColor.YELLOW);
-                return Set.of();
-            }
-
-            boolean upToDate = after.equals(before);
-            if (upToDate && !force) {
-                reply(feedback, "Already up to date.", NamedTextColor.YELLOW);
-                return Set.of();
-            }
-
-            // A first checkout touches every file, reloading everything then is pointless noise
-            Set<String> changed = (before == null || upToDate) ? Set.of() : changedPaths(repository, before, after);
-
             PackManifest manifest = readManifest();
-            writeGitignore(manifest);
+            PackRenderer renderer = renderer();
+            PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+            PackRenderer.Render render = renderer.apply(renderer.plan(manifest), state, force);
 
-            this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
-            if (changed.contains("pack.json")) {
+            if (!render.conflicts().isEmpty()) {
+                // Under force the render already ran, the conflicts only say what was overwritten
+                if (!force) {
+                    this.lastSyncFailed = true;
+                    reportLocalEdits(feedback, render.conflicts());
+                    return Set.of();
+                }
+                this.logger.warning("Force sync overwrote " + render.conflicts().size()
+                        + " file(s) edited on this server: " + String.join(", ", render.conflicts()));
+                reply(feedback, "Overwrote " + render.conflicts().size() + " file(s) edited on this server.", NamedTextColor.YELLOW);
+            }
+
+            Set<String> changed = new LinkedHashSet<>(render.changed());
+            String packHash = packHash();
+            if (state.packHash != null && !state.packHash.equals(packHash)) {
                 // A plugin dropped from the pack is gone from the manifest as well, so nothing
-                // above can match the paths it left behind. Its files disappear from disk while
+                // below can match the paths it left behind. Its files disappear from disk while
                 // the server keeps it loaded, and only a restart settles that.
+                changed.add("pack.json");
                 this.restartReasons.put("pack.json", "the pack composition changed");
             }
-            if (force) {
-                // A hard reset also restores files that only drifted in the working tree, and a
-                // commit to commit diff cannot see those. Reloading the whole pack to cover that
-                // blind spot is expensive and still not a guarantee, so say what is actually true.
-                this.restartReasons.put("force sync", "local changes to tracked files were discarded");
-            }
+            state.packHash = packHash;
+            state.save(this.stateFile);
+
+            this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
 
             // Once the pack composition changed, the loaded plugins no longer match what is on disk,
             // so reloading anything is guesswork. Stays off for every later sync too, until a restart.
             boolean packChanged = this.restartReasons.containsKey("pack.json");
             List<String> commands = packChanged ? List.of() : manifest.reloadCommandsFor(changed);
 
-            this.logger.info("Pulled " + after.name().substring(0, 7) + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
-            reply(feedback, "Synced " + after.name().substring(0, 7)
+            if (changed.isEmpty() && !force) {
+                reply(feedback, "Already up to date.", NamedTextColor.YELLOW);
+                return Set.of();
+            }
+
+            this.logger.info("Synced " + describeHead() + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
+            reply(feedback, "Synced " + describeHead()
                     + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).", NamedTextColor.GREEN);
             if (packChanged) {
                 this.logger.info("pack.json changed, reload commands are disabled until the server restarts.");
@@ -259,12 +279,6 @@ public class GitSyncService {
 
             runReloadCommands(commands);
             return changed;
-        } catch (CheckoutConflictException exception) {
-            // JGit throws this instead of returning a failed PullResult when local edits to tracked
-            // files would be overwritten, so the paths only exist on the exception
-            this.lastSyncFailed = true;
-            reportConflicts(feedback, new LinkedHashSet<>(exception.getConflictingPaths()), "CHECKOUT_CONFLICT");
-            return Set.of();
         } catch (Exception exception) {
             this.lastSyncFailed = true;
             this.logger.log(Level.SEVERE, "Sync failed", exception);
@@ -273,6 +287,149 @@ public class GitSyncService {
         } finally {
             this.syncing.set(false);
         }
+    }
+
+    /** Files declared by the pack that differ on this server from what the last sync rendered. */
+    public List<PackRenderer.LocalChange> localChanges() throws IOException {
+        return renderer().localChanges(readManifest(), PackRenderer.State.load(this.stateFile));
+    }
+
+    /** Jars in plugins/ that no pack entry claims and this server was not told to keep private. */
+    public List<String> unknownJars() throws IOException {
+        List<String> ignored = new ArrayList<>();
+        if (this.plugin != null) {
+            ignored.addAll(this.plugin.dataConfiguration().ignoredPluginWildcards);
+            // Our own jar is not part of any pack, asking about it on every commit is noise
+            ignored.add(this.plugin.getFile().getName());
+        }
+        return renderer().unknownJars(readManifest(), ignored);
+    }
+
+    /**
+     * Publish the edits made on this server: every declared file that drifted goes back into the
+     * layer it was rendered from, a file created here goes to the role layer, and a file deleted
+     * here is dropped from its layer - which re-exposes the copy in the layer below it.
+     */
+    public synchronized void commitAndPush(CommandSender sender, String message) throws Exception {
+        PackRenderer renderer = renderer();
+        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+        List<PackRenderer.LocalChange> changes = renderer.localChanges(readManifest(), state);
+
+        for (PackRenderer.LocalChange change : changes) {
+            if (change.kind() == PackRenderer.Kind.DELETED) {
+                renderer.unstage(change.logicalPath(), change.targetLayer());
+            } else {
+                renderer.stage(change.logicalPath(), change.targetLayer());
+            }
+        }
+
+        if (!commit(sender, message)) {
+            return;
+        }
+        if (!push(sender)) {
+            return;
+        }
+
+        for (PackRenderer.LocalChange change : changes) {
+            if (change.kind() == PackRenderer.Kind.DELETED) {
+                state.files.remove(change.logicalPath());
+            } else {
+                state.files.put(change.logicalPath(),
+                        new PackRenderer.State.Entry(change.targetLayer(), renderer.diskHash(change.logicalPath())));
+            }
+        }
+        state.save(this.stateFile);
+        reply(sender, "Successfully pushed! " + changes.size() + " local change(s) are now in the pack.", NamedTextColor.GREEN);
+    }
+
+    /** Add a jar found on this server to the pack, in the layer the admin picked. */
+    public synchronized void addPluginToPack(CommandSender sender, String jarName, String layer) throws Exception {
+        PackRenderer renderer = renderer();
+        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+
+        String name = PackRenderer.derivePluginName(jarName);
+        PackManifest manifest = readManifest();
+        PackManifest.Entry entry = manifest.plugins.computeIfAbsent(name, key -> new PackManifest.Entry());
+        entry.pluginJarWildcard = PackRenderer.deriveWildcard(jarName);
+
+        // Only the jar joins the pack. Which of its files are config and which are player data is
+        // not something to guess at, so configPaths stays empty until someone fills it in.
+        Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
+        renderer.stage(jarName, layer);
+
+        if (!commit(sender, "Add " + name + " to " + layer)) {
+            return;
+        }
+        if (!push(sender)) {
+            return;
+        }
+
+        state.files.put(jarName, new PackRenderer.State.Entry(layer, renderer.diskHash(jarName)));
+        state.packHash = packHash();
+        state.save(this.stateFile);
+
+        reply(sender, name + " is now part of the pack in " + layer
+                + ". Add its config paths to pack.json to sync those too.", NamedTextColor.GREEN);
+    }
+
+    /** Throw away the local edits: render the pack over them again, from what is already pulled. */
+    public synchronized void resetRender(CommandSender sender) throws Exception {
+        // A commitandpush that failed halfway can leave copies staged in the pack
+        this.git.clean().setForce(true).setCleanDirectories(true).call();
+        this.git.reset().setMode(ResetCommand.ResetType.HARD).setRef(Constants.HEAD).call();
+
+        PackRenderer renderer = renderer();
+        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+        PackRenderer.Render render = renderer.apply(renderer.plan(readManifest()), state, true);
+        state.packHash = packHash();
+        state.save(this.stateFile);
+
+        reply(sender, "Restored " + render.changed().size() + " file(s) from the pack.", NamedTextColor.GREEN);
+    }
+
+    private boolean commit(CommandSender sender, String message) throws Exception {
+        this.git.add().addFilepattern(".").call();
+        this.git.add().addFilepattern(".").setUpdate(true).call();
+
+        if (this.git.status().call().isClean()) {
+            reply(sender, "Nothing to commit, pushing...", NamedTextColor.YELLOW);
+            return true;
+        }
+
+        this.git.commit()
+                .setMessage(message)
+                // Whoever ran the command owns the commit, the repository identity stays the committer
+                .setAuthor(sender.getName(), sender.getName().toLowerCase() + "@minecraft.server.null")
+                .call();
+        reply(sender, "Commit created! Pushing...", NamedTextColor.GREEN);
+        return true;
+    }
+
+    private boolean push(CommandSender sender) throws Exception {
+        Iterable<PushResult> results = this.git.push()
+                .setRemote(REMOTE)
+                .setCredentialsProvider(credentials())
+                .call();
+
+        // JGit does not throw when the remote rejects the push, the status sits on each ref update
+        boolean rejected = false;
+        for (PushResult result : results) {
+            for (RemoteRefUpdate update : result.getRemoteUpdates()) {
+                if (update.getStatus() == RemoteRefUpdate.Status.OK
+                        || update.getStatus() == RemoteRefUpdate.Status.UP_TO_DATE) {
+                    continue;
+                }
+
+                rejected = true;
+                String reason = update.getMessage() != null ? update.getMessage() : update.getStatus().name();
+                reply(sender, "Push rejected for " + update.getRemoteName() + ": " + reason, NamedTextColor.RED);
+            }
+        }
+
+        if (rejected) {
+            reply(sender, "Push failed. The remote most likely has commits you do not have, run /gitsync sync first.", NamedTextColor.RED);
+        }
+        return !rejected;
     }
 
     /** During bootstrap nothing is loaded yet, so there is nothing to reload either. */
@@ -292,19 +449,9 @@ public class GitSyncService {
         }
     }
 
-    /** The file that keeps every plugin outside pack.json invisible to git. */
-    public File gitignoreFile() {
-        return new File(this.repoDir, ".gitignore");
-    }
-
-    private void writeGitignore(PackManifest manifest) throws IOException {
-        Files.write(gitignoreFile().toPath(), manifest.gitignoreLines(), StandardCharsets.UTF_8);
-    }
-
     /**
-     * Take the remote branch as-is, discarding whatever the working tree says. A hard reset
-     * overwrites conflicting tracked files instead of refusing like a merge would, and leaves
-     * untracked files alone, so nothing outside the pack can be lost.
+     * Take the remote branch as-is, discarding whatever the local repository says. A hard reset
+     * overwrites conflicting tracked files instead of refusing like a merge would.
      */
     private boolean resetToRemote(PluginConfiguration config, CommandSender feedback) throws Exception {
         this.git.fetch().setRemote(REMOTE).setCredentialsProvider(credentials()).setRemoveDeletedRefs(true).call();
@@ -315,7 +462,7 @@ public class GitSyncService {
             return false;
         }
 
-        this.logger.info("Force sync: resetting onto " + REMOTE + "/" + config.branch + ", local changes to tracked files are discarded.");
+        this.logger.info("Force sync: resetting onto " + REMOTE + "/" + config.branch + ", local changes are discarded.");
         this.git.reset().setMode(ResetCommand.ResetType.HARD).setRef(target.name()).call();
         return true;
     }
@@ -349,11 +496,22 @@ public class GitSyncService {
         }
 
         this.logger.severe("Pull failed (" + status + "), conflicting files: " + String.join(", ", conflicts));
-        reply(feedback, "Sync failed, " + conflicts.size() + " conflicting file(s):", NamedTextColor.RED);
+        reply(feedback, "Sync failed, " + conflicts.size() + " conflicting file(s) in the pack:", NamedTextColor.RED);
         for (String path : conflicts) {
             reply(feedback, "  " + path, NamedTextColor.DARK_RED);
         }
-        reply(feedback, "Resolve them in the plugins directory, or run /gitsync sync force to discard local changes.", NamedTextColor.YELLOW);
+        reply(feedback, "Run /gitsync sync --force to take the remote as it is.", NamedTextColor.YELLOW);
+    }
+
+    /** The pack wants to change files that were edited on this server, so nothing was written. */
+    private void reportLocalEdits(CommandSender feedback, List<String> conflicts) {
+        this.logger.severe("Sync stopped, files edited on this server would be overwritten: " + String.join(", ", conflicts));
+        reply(feedback, "Sync stopped, " + conflicts.size() + " file(s) were edited on this server:", NamedTextColor.RED);
+        for (String path : conflicts) {
+            reply(feedback, "  " + path, NamedTextColor.DARK_RED);
+        }
+        reply(feedback, "Publish them with /gitsync git commitandpush <message>, "
+                + "or throw them away with /gitsync sync --force.", NamedTextColor.YELLOW);
     }
 
     /** Defaults applied once, when the repository is created. */
@@ -385,7 +543,7 @@ public class GitSyncService {
     }
 
     private PackManifest readManifest() throws IOException {
-        File file = new File(this.repoDir, "pack.json");
+        File file = this.packDir.resolve("pack.json").toFile();
         if (!file.isFile()) {
             this.logger.warning("pack.json not found in the repository root.");
             return new PackManifest();
@@ -393,30 +551,16 @@ public class GitSyncService {
         return PackManifest.parse(Files.readString(file.toPath(), StandardCharsets.UTF_8));
     }
 
-    private Set<String> changedPaths(Repository repository, ObjectId from, ObjectId to) throws Exception {
-        Set<String> paths = new LinkedHashSet<>();
-        try (ObjectReader reader = repository.newObjectReader(); RevWalk walk = new RevWalk(repository)) {
-            AbstractTreeIterator oldTree = treeOf(reader, walk, from);
-            AbstractTreeIterator newTree = treeOf(reader, walk, to);
-            for (DiffEntry entry : this.git.diff().setOldTree(oldTree).setNewTree(newTree).call()) {
-                if (entry.getChangeType() != DiffEntry.ChangeType.ADD) {
-                    paths.add(entry.getOldPath());
-                }
-                if (entry.getChangeType() != DiffEntry.ChangeType.DELETE) {
-                    paths.add(entry.getNewPath());
-                }
-            }
-        }
-        return paths;
+    /** Null when the repository has no pack.json yet. */
+    private String packHash() throws IOException {
+        Path file = this.packDir.resolve("pack.json");
+        return Files.isRegularFile(file) ? PackRenderer.hash(Files.readAllBytes(file)) : null;
     }
 
-    private AbstractTreeIterator treeOf(ObjectReader reader, RevWalk walk, ObjectId commit) throws IOException {
-        if (commit == null) {
-            return new EmptyTreeIterator();
-        }
-        CanonicalTreeParser parser = new CanonicalTreeParser();
-        parser.reset(reader, walk.parseCommit(commit).getTree());
-        return parser;
+    private String describeHead() throws IOException {
+        Repository repository = this.git.getRepository();
+        ObjectId head = repository.resolve(Constants.HEAD);
+        return head == null ? "<nothing pulled yet>" : head.name().substring(0, 7);
     }
 
     private void reply(CommandSender sender, String message, NamedTextColor color) {

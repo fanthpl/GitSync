@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PackManifestTest {
@@ -28,17 +29,13 @@ class PackManifestTest {
             """;
 
     @Test
-    void gitignoreIgnoresEverythingButDeclaredPaths() {
-        List<String> lines = PackManifest.parse(PACK).gitignoreLines();
+    void matchesOnlyWhatThePackDeclares() {
+        PackManifest manifest = PackManifest.parse(PACK);
 
-        assertTrue(lines.contains("/**"));
-        // A parent directory has to be re-included or git never descends into it
-        assertTrue(lines.contains("!/ItemsAdder/"));
-        assertTrue(lines.contains("!/ItemsAdder/storage"));
-        assertTrue(lines.contains("!/ItemsAdder/storage/**"));
-        assertTrue(lines.contains("!/ItemsAdder/config.yml"));
-        assertTrue(lines.contains("!/ItemsAdder-*.jar"));
-        assertTrue(lines.indexOf("/**") < lines.indexOf("!/ItemsAdder/"), "negations must come after the catch-all");
+        assertTrue(manifest.matches("ItemsAdder/config.yml"));
+        assertTrue(manifest.matches("ItemsAdder/storage/items/sword.yml"));
+        assertTrue(manifest.matches("ItemsAdder-4.0.jar"));
+        assertFalse(manifest.matches("SomeOther/config.yml"));
     }
 
     @Test
