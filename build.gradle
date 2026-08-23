@@ -26,7 +26,6 @@ dependencies {
     implementation 'eu.okaeri:okaeri-configs-yaml-bukkit:6.1.0-beta.4'
     implementation 'eu.okaeri:okaeri-configs-serdes-commons:6.1.0-beta.4'
     implementation 'eu.okaeri:okaeri-configs-validator-okaeri:6.1.0-beta.4'
-    implementation 'eu.okaeri:okaeri-placeholders-bukkit:6.0.0-beta.2'
 
     implementation "co.aikar:acf-paper:0.5.1-SNAPSHOT"
 

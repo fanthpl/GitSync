@@ -58,6 +58,8 @@ public class GitSyncService {
     private final AtomicBoolean syncing = new AtomicBoolean();
     // Cleared by the restart itself, so it never needs to be persisted
     private final Map<String, String> restartReasons = new LinkedHashMap<>();
+    // The sync runs on a timer, so a missing variable is only worth saying when the set changes
+    private Set<String> reportedMissingVariables = Set.of();
 
     private Git git;
     private BukkitTask task;
@@ -174,7 +176,7 @@ public class GitSyncService {
     /** Renders the layers this server subscribes to. */
     public PackRenderer renderer() {
         ServerConfiguration server = this.serverSupplier.get();
-        return new PackRenderer(this.packDir, this.pluginsDir, server.role, server.instance);
+        return new PackRenderer(this.packDir, this.pluginsDir, server.role, server.instance, server.variables);
     }
 
     /** The shared repository handle, null until open() succeeds. Do not close it. */
@@ -229,6 +231,7 @@ public class GitSyncService {
             PackRenderer renderer = renderer();
             PackRenderer.State state = PackRenderer.State.load(this.stateFile);
             PackRenderer.Render render = renderer.apply(renderer.plan(manifest), state, force);
+            reportUnresolvedVariables(render.unresolved());
 
             if (!render.conflicts().isEmpty()) {
                 // Under force the render already ran, the conflicts only say what was overwritten
@@ -308,26 +311,47 @@ public class GitSyncService {
     /**
      * Publish the edits made on this server: every declared file that drifted goes back into the
      * layer it was rendered from, a file created here goes to the role layer, and a file deleted
-     * here is dropped from its layer - which re-exposes the copy in the layer below it.
+     * here is dropped from its layer - which re-exposes the copy in the layer below it. Variables
+     * are put back on the way in, so this server's own values stay here.
+     *
+     * @param confirmed publish even the variable lines that cannot be put back
+     * @return the variable lines that stopped the commit, empty when it went through
      */
-    public synchronized void commitAndPush(CommandSender sender, String message) throws Exception {
+    public synchronized List<String> commitAndPush(CommandSender sender, String message, boolean confirmed) throws Exception {
         PackRenderer renderer = renderer();
         PackRenderer.State state = PackRenderer.State.load(this.stateFile);
         List<PackRenderer.LocalChange> changes = renderer.localChanges(readManifest(), state);
+
+        // Worked out before anything is written, so a refusal leaves the pack untouched
+        Map<String, PackRenderer.Reversal> reversals = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+        for (PackRenderer.LocalChange change : changes) {
+            if (change.kind() == PackRenderer.Kind.DELETED) {
+                continue;
+            }
+            PackRenderer.Reversal reversal = renderer.reverse(change.logicalPath(), change.targetLayer());
+            reversals.put(change.logicalPath(), reversal);
+            warnings.addAll(reversal.warnings());
+        }
+
+        if (!warnings.isEmpty() && !confirmed) {
+            reportFlattenedVariables(sender, warnings);
+            return warnings;
+        }
 
         for (PackRenderer.LocalChange change : changes) {
             if (change.kind() == PackRenderer.Kind.DELETED) {
                 renderer.unstage(change.logicalPath(), change.targetLayer());
             } else {
-                renderer.stage(change.logicalPath(), change.targetLayer());
+                renderer.stage(change.logicalPath(), change.targetLayer(), reversals.get(change.logicalPath()));
             }
         }
 
         if (!commit(sender, message)) {
-            return;
+            return List.of();
         }
         if (!push(sender)) {
-            return;
+            return List.of();
         }
 
         for (PackRenderer.LocalChange change : changes) {
@@ -340,6 +364,10 @@ public class GitSyncService {
         }
         state.save(this.stateFile);
         reply(sender, "Successfully pushed! " + changes.size() + " local change(s) are now in the pack.", NamedTextColor.GREEN);
+        if (!warnings.isEmpty()) {
+            reply(sender, "Published " + warnings.size() + " line(s) with this server's own values in them.", NamedTextColor.YELLOW);
+        }
+        return List.of();
     }
 
     /** Add a jar found on this server to the pack, in the layer the admin picked. */
@@ -501,6 +529,38 @@ public class GitSyncService {
             reply(feedback, "  " + path, NamedTextColor.DARK_RED);
         }
         reply(feedback, "Run /gitsync sync --force to take the remote as it is.", NamedTextColor.YELLOW);
+    }
+
+    /**
+     * A packed file asks for a value this server never declared. The rendered file keeps the ${NAME}
+     * as it stands, which the plugin owning it will almost certainly not understand, so say it out
+     * loud - most often the server was set up without a variable its role expects.
+     */
+    private void reportUnresolvedVariables(Map<String, Set<String>> unresolved) {
+        if (unresolved.keySet().equals(this.reportedMissingVariables)) {
+            return;
+        }
+        this.reportedMissingVariables = new LinkedHashSet<>(unresolved.keySet());
+
+        unresolved.forEach((name, files) -> this.logger.warning("Variable ${" + name + "} is used by "
+                + String.join(", ", files) + " but server.yml does not set it."));
+    }
+
+    /**
+     * A line holding a variable was edited by hand, so there is no way to tell the value apart from
+     * the edit and put the variable back. Committing it would hand this server's value to every
+     * other server rendering that file, which is worth stopping for.
+     */
+    private void reportFlattenedVariables(CommandSender sender, List<String> warnings) {
+        this.logger.warning("Commit stopped, " + warnings.size()
+                + " line(s) hold a variable that was edited by hand: " + String.join("; ", warnings));
+
+        reply(sender, "Nothing was committed. " + warnings.size() + " line(s) hold a variable that was", NamedTextColor.RED);
+        reply(sender, "edited by hand, so this server's own values would go to every other server:", NamedTextColor.RED);
+        for (String warning : warnings) {
+            reply(sender, "  " + warning, NamedTextColor.DARK_RED);
+        }
+        reply(sender, "Put the ${VARIABLE} back in the file to keep it shared, or publish anyway.", NamedTextColor.YELLOW);
     }
 
     /** The pack wants to change files that were edited on this server, so nothing was written. */

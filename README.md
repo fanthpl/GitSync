@@ -16,7 +16,7 @@ The repository is cloned into `plugins/GitSync/pack/`, and `plugins/` is rendere
 plugins/
 ├── GitSync/
 │   ├── config.yml           <- remote, branch, credentials
-│   ├── server.yml           <- role and instance of this server
+│   ├── server.yml           <- role, instance and variables of this server
 │   ├── render-state.json    <- what the last render wrote, do not edit
 │   └── pack/                <- the repository
 │       ├── pack.json        <- declares what is synced
@@ -102,9 +102,28 @@ syncOnStartup: true
 role: "city"
 # This one server, rendered from instance/<instance>/ over the role. Empty for none.
 instance: "city-1"
+# What this server puts into the synced files.
+variables:
+  SERVER_NAME: "city-1"
+  DB_PASSWORD: "${DB_PASSWORD}"
 ```
 
-Both fields resolve `${VAR}` from the environment, so `role: "${GITSYNC_ROLE}"` picks up an egg variable on Pterodactyl instead of being typed into every server.
+`role` and `instance` resolve `${VAR}` from the environment, so `role: "${GITSYNC_ROLE}"` picks up an egg variable on Pterodactyl instead of being typed into every server. Variable values do the same.
+
+## Variables
+
+A field that differs per server does not need a whole file in `role/` or `instance/` to override it. Write the name in the packed file:
+
+```yaml
+serverName: ${SERVER_NAME}
+password: ${DB_PASSWORD}
+```
+
+Rendering puts this server's values in, and `/gitsync git commitandpush` takes them back out, so the pack keeps the `${NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
+
+Only names this server declares are touched. A `${...}` the pack uses but `server.yml` does not set is left in the file as it stands, and named in the console at every sync where the set of missing names changes. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
+
+Editing the variable's own line by hand is the one thing that cannot be undone - the value and the edit are indistinguishable. That stops the commit, names the lines, and offers a `[publish anyway]` button (`--confirm` at the end of the message from the console), because publishing sends this server's value to everyone.
 
 ## Commands
 
@@ -124,7 +143,7 @@ Configs are meant to be tweaked in place. Do it, then publish:
 | --- | --- |
 | `/gitsync git status` | Which synced files were edited here, and which layer each one would go back to. |
 | `/gitsync git diff [path]` | What differs between the pack and the files on this server. |
-| `/gitsync git commitandpush <message>` | Copy those edits back into the layer each file came from, commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. |
+| `/gitsync git commitandpush <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
 | `/gitsync git showahead` | Commits that exist locally but not on the remote. |
 | `/gitsync git resethead` | Throw away the local edits and render the pack over them again. |
 

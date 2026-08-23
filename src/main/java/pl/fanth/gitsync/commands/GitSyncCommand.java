@@ -50,6 +50,8 @@ import java.util.logging.Level;
 public class GitSyncCommand extends BaseCommand {
     /** Chat scrollback is short, a full config rewrite would push everything else out of it. */
     private static final int DIFF_LINE_LIMIT = 120;
+    /** Tacked onto the commit message to publish variable lines that cannot be put back. */
+    private static final String CONFIRM_FLAG = " --confirm";
 
     @HelpCommand
     public void doHelp(CommandSender sender, CommandHelp help) {
@@ -325,15 +327,44 @@ public class GitSyncCommand extends BaseCommand {
 
     @Subcommand("git commitandpush")
     @Description("Publish the edits made on this server back to the pack")
-    @Syntax("<message>")
+    @Syntax("<message> [--confirm]")
     public void commitAndPush(CommandSender sender, String message) {
+        String cleaned = message.trim();
+        boolean confirmed = cleaned.toLowerCase().endsWith(CONFIRM_FLAG);
+        if (confirmed) {
+            cleaned = cleaned.substring(0, cleaned.length() - CONFIRM_FLAG.length()).trim();
+        }
+
+        if (cleaned.isEmpty()) {
+            send(sender, "A commit message is required.", NamedTextColor.RED);
+            return;
+        }
+        publish(sender, cleaned, confirmed);
+    }
+
+    private void publish(CommandSender sender, String message, boolean confirmed) {
         send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            service.commitAndPush(sender, message);
+            if (!service.commitAndPush(sender, message, confirmed).isEmpty()) {
+                offerToPublishAnyway(sender, message);
+                return;
+            }
             askAboutNewPlugins(sender, service.unknownJars());
         });
+    }
+
+    /** The service already named the lines it could not put back, this is the way past it. */
+    private void offerToPublishAnyway(CommandSender sender, String message) {
+        if (!(sender instanceof Player)) {
+            send(sender, "Add " + CONFIRM_FLAG.trim() + " to the end of the message to publish them anyway.", NamedTextColor.YELLOW);
+            return;
+        }
+
+        sender.sendMessage(Component.text("[publish anyway]").color(NamedTextColor.RED)
+                .hoverEvent(HoverEvent.showText(Component.text("Send this server's own values to every server rendering these files")))
+                .clickEvent(ClickEvent.callback(audience -> publish(sender, message, true))));
     }
 
     /**

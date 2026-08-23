@@ -11,8 +11,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PackRendererTest {
@@ -41,11 +43,15 @@ class PackRendererTest {
     private Path plugins;
 
     private PackRenderer renderer(String role, String instance) throws IOException {
+        return renderer(role, instance, Map.of());
+    }
+
+    private PackRenderer renderer(String role, String instance, Map<String, String> variables) throws IOException {
         this.pack = this.dir.resolve("pack");
         this.plugins = this.dir.resolve("plugins");
         Files.createDirectories(this.pack);
         Files.createDirectories(this.plugins);
-        return new PackRenderer(this.pack, this.plugins, role, instance);
+        return new PackRenderer(this.pack, this.plugins, role, instance, variables);
     }
 
     @Test
@@ -202,8 +208,130 @@ class PackRendererTest {
         assertEquals("NoVersion", PackRenderer.derivePluginName("NoVersion.jar"));
     }
 
+    @Test
+    void aDefinedVariableIsRenderedAndAnUnknownOneIsLeftAlone() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\nmotd: ${SOMEONE_ELSES}\n");
+
+        PackRenderer.State state = new PackRenderer.State();
+        PackRenderer.Render render = renderer.apply(renderer.plan(PACK), state, false);
+
+        assertEquals("serverName: lobby-1\nmotd: ${SOMEONE_ELSES}\n", localContent("Essentials/config.yml"));
+        assertEquals(Map.of("SOMEONE_ELSES", Set.of("Essentials/config.yml")), render.unresolved());
+
+        // The rendered form is what the state remembers, so the next sync sees no drift at all
+        PackRenderer.Render again = renderer.apply(renderer.plan(PACK), state, false);
+        assertTrue(again.changed().isEmpty());
+        assertTrue(again.conflicts().isEmpty());
+    }
+
+    @Test
+    void publishingPutsTheVariableBackAndKeepsTheEdit() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\nmotd: hello\n");
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        // Edited around the variable: one line changed, one added above it
+        local("Essentials/config.yml", "debug: true\nserverName: lobby-1\nmotd: goodbye\n");
+
+        PackRenderer.Reversal reversal = renderer.reverse("Essentials/config.yml", "base");
+        renderer.stage("Essentials/config.yml", "base", reversal);
+
+        assertTrue(reversal.warnings().isEmpty());
+        assertEquals("debug: true\nserverName: ${SERVER_NAME}\nmotd: goodbye\n",
+                packedContent("base/Essentials/config.yml"));
+    }
+
+    @Test
+    void aVariableLineEditedByHandIsReportedAndStaysResolved() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\nmotd: hello\n");
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        local("Essentials/config.yml", "serverName: renamed-by-hand\nmotd: hello\n");
+
+        PackRenderer.Reversal reversal = renderer.reverse("Essentials/config.yml", "base");
+        renderer.stage("Essentials/config.yml", "base", reversal);
+
+        assertEquals(List.of("Essentials/config.yml: serverName: ${SERVER_NAME}"), reversal.warnings());
+        assertEquals("serverName: renamed-by-hand\nmotd: hello\n", packedContent("base/Essentials/config.yml"));
+    }
+
+    @Test
+    void aLineHoldingTwoVariablesGoesBothWays() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("HOST", "db.local", "PORT", "3306"));
+        packed("base/Essentials/config.yml", "url: jdbc:mysql://${HOST}:${PORT}/mc\n");
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+        assertEquals("url: jdbc:mysql://db.local:3306/mc\n", localContent("Essentials/config.yml"));
+
+        renderer.stage("Essentials/config.yml", "base", renderer.reverse("Essentials/config.yml", "base"));
+        assertEquals("url: jdbc:mysql://${HOST}:${PORT}/mc\n", packedContent("base/Essentials/config.yml"));
+    }
+
+    /** The Windows servers sharing the pack hand back CRLF, git stores LF either way. */
+    @Test
+    void aConfigSavedWithCrlfStillPutsTheVariableBack() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\nmotd: hello\n");
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        local("Essentials/config.yml", "serverName: lobby-1\r\nmotd: goodbye\r\n");
+
+        PackRenderer.Reversal reversal = renderer.reverse("Essentials/config.yml", "base");
+        renderer.stage("Essentials/config.yml", "base", reversal);
+
+        assertTrue(reversal.warnings().isEmpty());
+        assertEquals("serverName: ${SERVER_NAME}\nmotd: goodbye\n", packedContent("base/Essentials/config.yml"));
+    }
+
+    @Test
+    void aChangedVariableValueIsAnUpdateAndNotAConflict() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\n");
+
+        PackRenderer.State state = new PackRenderer.State();
+        renderer.apply(renderer.plan(PACK), state, false);
+        assertEquals("serverName: lobby-1\n", localContent("Essentials/config.yml"));
+
+        PackRenderer renamed = renderer("", "", Map.of("SERVER_NAME", "lobby-2"));
+        PackRenderer.Render render = renamed.apply(renamed.plan(PACK), state, false);
+
+        assertTrue(render.conflicts().isEmpty(), "the file was never edited here, only the value changed");
+        assertEquals(Set.of("Essentials/config.yml"), render.changed());
+        assertEquals("serverName: lobby-2\n", localContent("Essentials/config.yml"));
+    }
+
+    @Test
+    void aBinaryFileIsNeverSubstituted() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
+        byte[] binary = "PK\003\004\0${SERVER_NAME}\0".getBytes(StandardCharsets.UTF_8);
+        Files.createDirectories(this.pack.resolve("base"));
+        Files.write(this.pack.resolve("base/ItemsAdder_4.0.17.jar"), binary);
+
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        assertArrayEquals(binary, Files.readAllBytes(this.plugins.resolve("ItemsAdder_4.0.17.jar")));
+        assertNull(renderer.reverse("ItemsAdder_4.0.17.jar", "base").bytes(), "a jar goes into the pack as it is");
+    }
+
+    @Test
+    void aServerWithoutVariablesTouchesNothing() throws Exception {
+        PackRenderer renderer = renderer("", "");
+        packed("base/Essentials/config.yml", "serverName: ${SERVER_NAME}\n");
+
+        PackRenderer.Render render = renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        assertEquals("serverName: ${SERVER_NAME}\n", localContent("Essentials/config.yml"));
+        assertTrue(render.unresolved().isEmpty(), "without variables of our own there is nothing to miss");
+        assertNull(renderer.reverse("Essentials/config.yml", "base").bytes());
+    }
+
     private void packed(String path, String content) throws IOException {
         write(this.pack.resolve(path), content);
+    }
+
+    private String packedContent(String path) throws IOException {
+        return Files.readString(this.pack.resolve(path), StandardCharsets.UTF_8);
     }
 
     private void local(String path, String content) throws IOException {
