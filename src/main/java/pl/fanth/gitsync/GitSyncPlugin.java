@@ -1,14 +1,8 @@
 package pl.fanth.gitsync;
 
 import co.aikar.commands.PaperCommandManager;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerJoinEvent;
 import pl.fanth.gitsync.commands.GitSyncCommand;
+import pl.fanth.gitsync.commands.PluginFileCompletion;
 import pl.fanth.gitsync.config.ConfigurationFactory;
 import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
@@ -53,6 +47,9 @@ public final class GitSyncPlugin extends JavaPlugin {
         PaperCommandManager manager = new PaperCommandManager(this);
 
         manager.enableUnstableAPI("help");
+        // Async, the listing walks the disk
+        manager.getCommandCompletions().registerAsyncCompletion("pluginfiles",
+                context -> PluginFileCompletion.complete(context.getInput()));
 
         manager.registerCommand(new GitSyncCommand());
     }

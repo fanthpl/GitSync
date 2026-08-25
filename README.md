@@ -28,7 +28,7 @@ plugins/
 └── SomeOtherPlugin/         <- never touched, not in pack.json
 ```
 
-GitSync remembers what it wrote in `render-state.json`. A file whose content no longer matches that was edited on this server, so a sync that wants to change it stops instead, names the files, and waits - either publish those edits with `/gitsync git commitandpush`, or throw them away with `/gitsync sync --force`. Nothing outside `pack.json` is ever written or deleted.
+GitSync remembers what it wrote in `render-state.json`. A file whose content no longer matches that was edited on this server, so a sync that wants to change it stops instead, names the files, and waits - either publish those edits with `/gitsync pushupdate`, or throw them away with `/gitsync sync --force`. Nothing outside `pack.json` is ever written or deleted.
 
 ## pack.json
 
@@ -119,7 +119,7 @@ serverName: ${SERVER_NAME}
 password: ${DB_PASSWORD}
 ```
 
-Rendering puts this server's values in, and `/gitsync git commitandpush` takes them back out, so the pack keeps the `${NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
+Rendering puts this server's values in, and `/gitsync pushupdate` takes them back out, so the pack keeps the `${NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
 
 Only names this server declares are touched. A `${...}` the pack uses but `server.yml` does not set is left in the file as it stands, and named in the console at every sync where the set of missing names changes. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
 
@@ -143,7 +143,7 @@ Configs are meant to be tweaked in place. Do it, then publish:
 | --- | --- |
 | `/gitsync git status` | Which synced files were edited here, and which layer each one would go back to. |
 | `/gitsync git diff [path]` | What differs between the pack and the files on this server. |
-| `/gitsync git commitandpush <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
+| `/gitsync pushupdate <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
 | `/gitsync git showahead` | Commits that exist locally but not on the remote. |
 | `/gitsync git resethead` | Throw away the local edits and render the pack over them again. |
 

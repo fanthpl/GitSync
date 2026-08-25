@@ -125,7 +125,7 @@ public class PackManifest {
             .toList();
     }
 
-    static String normalize(String path) {
+    public static String normalize(String path) {
         return path.replace('\\', '/').replaceAll("^/+", "").replaceAll("/+$", "");
     }
 }

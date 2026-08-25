@@ -6,11 +6,13 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
+import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.scheduler.BukkitTask;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.errors.RefNotAdvertisedException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
@@ -25,6 +27,7 @@ import pl.fanth.gitsync.config.ServerConfiguration;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,6 +40,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.logging.Logger;
 
 /**
@@ -212,11 +217,20 @@ public class GitSyncService {
                     return Set.of();
                 }
             } else {
-                PullResult result = this.git.pull()
-                        .setRemote(REMOTE)
-                        .setRemoteBranchName(config.branch)
-                        .setCredentialsProvider(credentials())
-                        .call();
+                PullResult result;
+                try {
+                    result = this.git.pull()
+                            .setRemote(REMOTE)
+                            .setRemoteBranchName(config.branch)
+                            .setCredentialsProvider(credentials())
+                            .call();
+                } catch (RefNotAdvertisedException exception) {
+                    // Empty remote, there is no branch to pull yet. The first push creates it.
+                    this.logger.info("Remote has no branch " + config.branch + " yet, nothing to pull.");
+                    reply(feedback, "The remote repository is still empty.", NamedTextColor.YELLOW);
+                    this.lastSyncFailed = false;
+                    return Set.of();
+                }
 
                 if (!result.isSuccessful()) {
                     this.lastSyncFailed = true;
@@ -297,6 +311,28 @@ public class GitSyncService {
         return renderer().localChanges(readManifest(), PackRenderer.State.load(this.stateFile));
     }
 
+    /**
+     * The name a plugin calls itself, taken from the descriptor inside its jar - which is also the
+     * name of its data folder, so it is what a config path is built from. Falls back to the file
+     * name for a jar carrying no descriptor this server can read.
+     */
+    public String pluginName(String jarName) {
+        try (JarFile jar = new JarFile(this.pluginsDir.resolve(jarName).toFile())) {
+            for (String descriptor : List.of("plugin.yml", "paper-plugin.yml")) {
+                JarEntry entry = jar.getJarEntry(descriptor);
+                if (entry == null) {
+                    continue;
+                }
+                try (InputStream stream = jar.getInputStream(entry)) {
+                    return new PluginDescriptionFile(stream).getName();
+                }
+            }
+        } catch (Exception exception) {
+            this.logger.log(Level.FINE, "Could not read the plugin name out of " + jarName, exception);
+        }
+        return PackRenderer.derivePluginName(jarName);
+    }
+
     /** Jars in plugins/ that no pack entry claims and this server was not told to keep private. */
     public List<String> unknownJars() throws IOException {
         List<String> ignored = new ArrayList<>();
@@ -315,12 +351,30 @@ public class GitSyncService {
      * are put back on the way in, so this server's own values stay here.
      *
      * @param confirmed publish even the variable lines that cannot be put back
+     * @param newPlugins jars this server holds that the admin decided to put into the pack
      * @return the variable lines that stopped the commit, empty when it went through
      */
-    public synchronized List<String> commitAndPush(CommandSender sender, String message, boolean confirmed) throws Exception {
+    public synchronized List<String> commitAndPush(CommandSender sender, String message, boolean confirmed,
+                                                   List<NewPlugin> newPlugins) throws Exception {
         PackRenderer renderer = renderer();
         PackRenderer.State state = PackRenderer.State.load(this.stateFile);
-        List<PackRenderer.LocalChange> changes = renderer.localChanges(readManifest(), state);
+
+        // Declared before the local changes are worked out, so a jar joining the pack and the
+        // config paths typed in for it are published by this very commit. Only in memory until
+        // the variable check below has passed, so a refusal still leaves the pack untouched.
+        PackManifest manifest = readManifest();
+        Map<String, String> addedLayers = new LinkedHashMap<>();
+        for (NewPlugin added : newPlugins) {
+            String name = pluginName(added.jar());
+            PackManifest.Entry entry = manifest.plugins.computeIfAbsent(name, key -> new PackManifest.Entry());
+            entry.pluginJarWildcard = added.wildcard();
+            entry.configPaths = new ArrayList<>(added.configPaths());
+            entry.reloadCommands = new ArrayList<>(added.reloadCommands());
+            addedLayers.put(name, added.layer());
+        }
+
+        List<PackRenderer.LocalChange> changes = new ArrayList<>(renderer.localChanges(manifest, state));
+        changes.replaceAll(change -> retarget(change, manifest, addedLayers));
 
         // Worked out before anything is written, so a refusal leaves the pack untouched
         Map<String, PackRenderer.Reversal> reversals = new LinkedHashMap<>();
@@ -337,6 +391,10 @@ public class GitSyncService {
         if (!warnings.isEmpty() && !confirmed) {
             reportFlattenedVariables(sender, warnings);
             return warnings;
+        }
+
+        if (!newPlugins.isEmpty()) {
+            Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
         }
 
         for (PackRenderer.LocalChange change : changes) {
@@ -362,47 +420,44 @@ public class GitSyncService {
                         new PackRenderer.State.Entry(change.targetLayer(), renderer.diskHash(change.logicalPath())));
             }
         }
+        // The jars that just joined are already loaded on this server, so the composition change
+        // they make is not one that asks for a restart
+        if (!newPlugins.isEmpty()) {
+            state.packHash = packHash();
+        }
         state.save(this.stateFile);
         reply(sender, "Successfully pushed! " + changes.size() + " local change(s) are now in the pack.", NamedTextColor.GREEN);
+        if (!newPlugins.isEmpty()) {
+            reply(sender, newPlugins.size() + " new plugin(s) are now part of the pack.", NamedTextColor.GREEN);
+        }
         if (!warnings.isEmpty()) {
             reply(sender, "Published " + warnings.size() + " line(s) with this server's own values in them.", NamedTextColor.YELLOW);
         }
         return List.of();
     }
 
-    /** Add a jar found on this server to the pack, in the layer the admin picked. */
-    public synchronized void addPluginToPack(CommandSender sender, String jarName, String layer) throws Exception {
-        PackRenderer renderer = renderer();
-        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
-
-        String name = PackRenderer.derivePluginName(jarName);
-        PackManifest manifest = readManifest();
-        PackManifest.Entry entry = manifest.plugins.computeIfAbsent(name, key -> new PackManifest.Entry());
-        entry.pluginJarWildcard = PackRenderer.deriveWildcard(jarName);
-
-        // Only the jar joins the pack. Which of its files are config and which are player data is
-        // not something to guess at, so configPaths stays empty until someone fills it in.
-        Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
-        renderer.stage(jarName, layer);
-
-        if (!commit(sender, "Add " + name + " to " + layer)) {
-            return;
+    /** Everything a plugin joining the pack owns goes to the layer picked for it, not the default. */
+    private PackRenderer.LocalChange retarget(PackRenderer.LocalChange change, PackManifest manifest,
+                                              Map<String, String> addedLayers) {
+        for (Map.Entry<String, String> added : addedLayers.entrySet()) {
+            if (manifest.plugins.get(added.getKey()).matches(change.logicalPath())) {
+                return new PackRenderer.LocalChange(change.logicalPath(), change.kind(), added.getValue());
+            }
         }
-        if (!push(sender)) {
-            return;
-        }
+        return change;
+    }
 
-        state.files.put(jarName, new PackRenderer.State.Entry(layer, renderer.diskHash(jarName)));
-        state.packHash = packHash();
-        state.save(this.stateFile);
-
-        reply(sender, name + " is now part of the pack in " + layer
-                + ". Add its config paths to pack.json to sync those too.", NamedTextColor.GREEN);
+    /**
+     * A jar found in plugins/ that the admin placed in a layer, with what it owns and how it
+     * reloads. The wildcard is what the pack matches jars by, so a version bump keeps the entry.
+     */
+    public record NewPlugin(String jar, String wildcard, String layer,
+                            List<String> configPaths, List<String> reloadCommands) {
     }
 
     /** Throw away the local edits: render the pack over them again, from what is already pulled. */
     public synchronized void resetRender(CommandSender sender) throws Exception {
-        // A commitandpush that failed halfway can leave copies staged in the pack
+        // A pushupdate that failed halfway can leave copies staged in the pack
         this.git.clean().setForce(true).setCleanDirectories(true).call();
         this.git.reset().setMode(ResetCommand.ResetType.HARD).setRef(Constants.HEAD).call();
 
@@ -434,6 +489,12 @@ public class GitSyncService {
     }
 
     private boolean push(CommandSender sender) throws Exception {
+        // A repository that never got a commit has no ref to push, JGit only says so by throwing
+        if (this.git.getRepository().resolve(Constants.HEAD) == null) {
+            reply(sender, "Nothing to push, the repository has no commits yet.", NamedTextColor.YELLOW);
+            return false;
+        }
+
         Iterable<PushResult> results = this.git.push()
                 .setRemote(REMOTE)
                 .setCredentialsProvider(credentials())
@@ -570,7 +631,7 @@ public class GitSyncService {
         for (String path : conflicts) {
             reply(feedback, "  " + path, NamedTextColor.DARK_RED);
         }
-        reply(feedback, "Publish them with /gitsync git commitandpush <message>, "
+        reply(feedback, "Publish them with /gitsync pushupdate <message>, "
                 + "or throw them away with /gitsync sync --force.", NamedTextColor.YELLOW);
     }
 
@@ -595,6 +656,12 @@ public class GitSyncService {
         StoredConfig stored = this.git.getRepository().getConfig();
         stored.setString("remote", REMOTE, "url", config.remote);
         stored.setString("remote", REMOTE, "fetch", "+refs/heads/*:" + Constants.R_REMOTES + REMOTE + "/*");
+        // What "git push --set-upstream origin <branch>" would write. Without it a plain git push
+        // run by hand in the pack directory stops and asks for the upstream, and autoSetupRemote
+        // covers whatever other branch someone checks out in there later.
+        stored.setString("branch", config.branch, "remote", REMOTE);
+        stored.setString("branch", config.branch, "merge", Constants.R_HEADS + config.branch);
+        stored.setBoolean("push", null, "autoSetupRemote", true);
         // Everything is stored and checked out as LF, on Windows too. A config saved with CRLF by
         // an editor is normalized back on staging, so it never shows up as a whole file diff, and
         // the Windows and Linux servers sharing this repository can never disagree about it.

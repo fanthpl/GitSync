@@ -8,7 +8,9 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import pl.fanth.gitsync.GitSyncPlugin;
+import pl.fanth.gitsync.prompt.NewPluginPrompt;
 
 public class PlayerListener implements Listener {
 
@@ -28,6 +30,12 @@ public class PlayerListener implements Listener {
                 .color(NamedTextColor.RED));
             player.playSound(player, Sound.BLOCK_NOTE_BLOCK_PLING, 1.0F, 0.5F);
         }, 60L);
+    }
+
+    /** A half answered prompt commits nothing, so leaving is the same as never having started it. */
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        NewPluginPrompt.forget(event.getPlayer());
     }
 
 }

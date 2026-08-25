@@ -22,7 +22,7 @@ public class ServerConfiguration extends OkaeriConfig {
     @Comment("")
     @Comment("What this server puts into the synced files. A ${NAME} written in a packed file")
     @Comment("becomes the value given here when the file is rendered, and goes back to ${NAME}")
-    @Comment("when /gitsync git commitandpush publishes it - so a database password or a server")
+    @Comment("when /gitsync pushupdate publishes it - so a database password or a server")
     @Comment("name stays on this server while the file itself stays shared.")
     @Comment("Values support environment placeholders too. Example:")
     @Comment("  variables:")

@@ -8,6 +8,7 @@ import co.aikar.commands.annotation.CommandPermission;
 import co.aikar.commands.annotation.Description;
 import co.aikar.commands.annotation.HelpCommand;
 import co.aikar.commands.annotation.Optional;
+import co.aikar.commands.annotation.Private;
 import co.aikar.commands.annotation.Subcommand;
 import co.aikar.commands.annotation.Syntax;
 import net.kyori.adventure.text.Component;
@@ -29,12 +30,12 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import pl.fanth.gitsync.GitSyncPlugin;
-import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.git.PackManifest;
 import pl.fanth.gitsync.git.PackRenderer;
+import pl.fanth.gitsync.prompt.NewPluginPrompt;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -325,10 +326,10 @@ public class GitSyncCommand extends BaseCommand {
         });
     }
 
-    @Subcommand("git commitandpush")
+    @Subcommand("pushupdate")
     @Description("Publish the edits made on this server back to the pack")
     @Syntax("<message> [--confirm]")
-    public void commitAndPush(CommandSender sender, String message) {
+    public void pushUpdate(CommandSender sender, String message) {
         String cleaned = message.trim();
         boolean confirmed = cleaned.toLowerCase().endsWith(CONFIRM_FLAG);
         if (confirmed) {
@@ -342,85 +343,93 @@ public class GitSyncCommand extends BaseCommand {
         publish(sender, cleaned, confirmed);
     }
 
+    // The three below are only ever reached by clicking a button the prompt prints, which puts the
+    // command in the chat box for the value to be typed after it. Split so the config path is the
+    // only one completed against the files on disk.
+
+    @Subcommand("newplugin wildcard")
+    @Private
+    @Syntax("<wildcard>")
+    public void newPluginWildcard(Player player, String value) {
+        NewPluginPrompt.accept(player, "wildcard", value);
+    }
+
+    @Subcommand("newplugin config")
+    @Private
+    @Syntax("<path>")
+    @CommandCompletion("@pluginfiles")
+    public void newPluginConfig(Player player, String value) {
+        NewPluginPrompt.accept(player, "config", value);
+    }
+
+    @Subcommand("newplugin reload")
+    @Private
+    @Syntax("<command>")
+    public void newPluginReload(Player player, String value) {
+        NewPluginPrompt.accept(player, "reload", value);
+    }
+
+    @Subcommand("newplugin show")
+    @Description("Print the plugin being placed again, for when the chat has run away")
+    public void newPluginShow(Player player) {
+        NewPluginPrompt.show(player);
+    }
+
+    @Subcommand("newplugin cancel")
+    @Description("Drop the plugins being placed, committing nothing")
+    public void newPluginCancel(Player player) {
+        NewPluginPrompt.cancel(player);
+    }
+
+    /** A jar nobody declared is placed in chat first, so nothing is committed unanswered. */
     private void publish(CommandSender sender, String message, boolean confirmed) {
+        // Two sessions would answer for the same jars and commit over each other
+        String busy = NewPluginPrompt.busyWith();
+        if (busy != null) {
+            send(sender, busy + " is still placing new plugins, "
+                + "wait for that to finish or drop it with /gitsync newplugin cancel.", NamedTextColor.RED);
+            return;
+        }
+
+        runAsync(sender, "checking for new plugins", git -> {
+            List<String> jars = GitSyncPlugin.instance().gitSyncService().unknownJars();
+            if (jars.isEmpty()) {
+                doPublish(sender, message, confirmed, List.of());
+                return;
+            }
+
+            if (!(sender instanceof Player player)) {
+                send(sender, "Nothing was committed, " + jars.size() + " plugin(s) in plugins/ are not part of the pack: "
+                    + String.join(", ", jars), NamedTextColor.YELLOW);
+                send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
+                return;
+            }
+            new NewPluginPrompt(player, jars, answers -> doPublish(sender, message, confirmed, answers)).start();
+        });
+    }
+
+    private void doPublish(CommandSender sender, String message, boolean confirmed, List<GitSyncService.NewPlugin> newPlugins) {
         send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            if (!service.commitAndPush(sender, message, confirmed).isEmpty()) {
-                offerToPublishAnyway(sender, message);
-                return;
+            if (!service.commitAndPush(sender, message, confirmed, newPlugins).isEmpty()) {
+                offerToPublishAnyway(sender, message, newPlugins);
             }
-            askAboutNewPlugins(sender, service.unknownJars());
         });
     }
 
     /** The service already named the lines it could not put back, this is the way past it. */
-    private void offerToPublishAnyway(CommandSender sender, String message) {
+    private void offerToPublishAnyway(CommandSender sender, String message, List<GitSyncService.NewPlugin> newPlugins) {
         if (!(sender instanceof Player)) {
             send(sender, "Add " + CONFIRM_FLAG.trim() + " to the end of the message to publish them anyway.", NamedTextColor.YELLOW);
             return;
         }
 
+        // Carries the answers along, so saying yes here does not ask about every jar again
         sender.sendMessage(Component.text("[publish anyway]").color(NamedTextColor.RED)
                 .hoverEvent(HoverEvent.showText(Component.text("Send this server's own values to every server rendering these files")))
-                .clickEvent(ClickEvent.callback(audience -> publish(sender, message, true))));
-    }
-
-    /**
-     * A jar nobody declared cannot be placed for the admin: base is every server, the role layer is
-     * every server of this kind, and the instance layer is this one alone. So ask, and let the
-     * answer be a click.
-     */
-    private void askAboutNewPlugins(CommandSender sender, List<String> jars) {
-        if (jars.isEmpty()) {
-            return;
-        }
-
-        if (!(sender instanceof Player)) {
-            send(sender, jars.size() + " plugin(s) in plugins/ are not part of the pack: "
-                + String.join(", ", jars), NamedTextColor.YELLOW);
-            send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
-            return;
-        }
-
-        ServerConfiguration server = GitSyncPlugin.instance().serverConfiguration();
-        for (String jar : jars) {
-            sender.sendMessage(Component.text("Detected a new plugin: ").color(NamedTextColor.GOLD)
-                .append(Component.text(jar).color(NamedTextColor.WHITE)));
-
-            Component buttons = layerButton(sender, jar, "base", "every server in the network");
-            if (!server.role.isBlank()) {
-                buttons = buttons.append(Component.space())
-                    .append(layerButton(sender, jar, "role/" + server.role, "every " + server.role + " server"));
-            }
-            if (!server.instance.isBlank()) {
-                buttons = buttons.append(Component.space())
-                    .append(layerButton(sender, jar, "instance/" + server.instance, "this server only"));
-            }
-            sender.sendMessage(buttons.append(Component.space()).append(ignoreButton(sender, jar)));
-        }
-    }
-
-    private Component layerButton(CommandSender sender, String jar, String layer, String meaning) {
-        return Component.text("[" + layer + "]").color(NamedTextColor.GREEN)
-            .hoverEvent(HoverEvent.showText(Component.text("Add " + jar + " to " + layer + " - " + meaning)))
-            .clickEvent(ClickEvent.callback(audience -> runAsync(sender, "adding the plugin to the pack", git ->
-                GitSyncPlugin.instance().gitSyncService().addPluginToPack(sender, jar, layer))));
-    }
-
-    private Component ignoreButton(CommandSender sender, String jar) {
-        String wildcard = PackRenderer.deriveWildcard(jar);
-        return Component.text("[ignore]").color(NamedTextColor.GRAY)
-            .hoverEvent(HoverEvent.showText(Component.text("Keep " + wildcard + " private to this server")))
-            .clickEvent(ClickEvent.callback(audience -> {
-                DataConfiguration data = GitSyncPlugin.instance().dataConfiguration();
-                if (!data.ignoredPluginWildcards.contains(wildcard)) {
-                    data.ignoredPluginWildcards.add(wildcard);
-                    data.save();
-                }
-                send(sender, wildcard + " stays private to this server.", NamedTextColor.GRAY);
-            }));
+                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins))));
     }
 
     /** Run a git action off the main thread on the shared repository handle. */
