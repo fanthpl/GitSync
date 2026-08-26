@@ -35,7 +35,7 @@ import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.git.PackManifest;
 import pl.fanth.gitsync.git.PackRenderer;
-import pl.fanth.gitsync.prompt.NewPluginPrompt;
+import pl.fanth.gitsync.prompt.PushUpdatePrompt;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -347,80 +347,92 @@ public class GitSyncCommand extends BaseCommand {
     // command in the chat box for the value to be typed after it. Split so the config path is the
     // only one completed against the files on disk.
 
-    @Subcommand("newplugin wildcard")
+    @Subcommand("prompt wildcard")
     @Private
     @Syntax("<wildcard>")
-    public void newPluginWildcard(Player player, String value) {
-        NewPluginPrompt.accept(player, "wildcard", value);
+    public void promptWildcard(Player player, String value) {
+        PushUpdatePrompt.accept(player, "wildcard", value);
     }
 
-    @Subcommand("newplugin config")
+    @Subcommand("prompt config")
     @Private
     @Syntax("<path>")
     @CommandCompletion("@pluginfiles")
-    public void newPluginConfig(Player player, String value) {
-        NewPluginPrompt.accept(player, "config", value);
+    public void promptConfig(Player player, String value) {
+        PushUpdatePrompt.accept(player, "config", value);
     }
 
-    @Subcommand("newplugin reload")
+    @Subcommand("prompt reload")
     @Private
     @Syntax("<command>")
-    public void newPluginReload(Player player, String value) {
-        NewPluginPrompt.accept(player, "reload", value);
+    public void promptReload(Player player, String value) {
+        PushUpdatePrompt.accept(player, "reload", value);
     }
 
-    @Subcommand("newplugin show")
-    @Description("Print the plugin being placed again, for when the chat has run away")
-    public void newPluginShow(Player player) {
-        NewPluginPrompt.show(player);
+    @Subcommand("prompt show")
+    @Description("Print the push being prepared again, for when the chat has run away")
+    public void promptShow(Player player) {
+        PushUpdatePrompt.show(player);
     }
 
-    @Subcommand("newplugin cancel")
-    @Description("Drop the plugins being placed, committing nothing")
-    public void newPluginCancel(Player player) {
-        NewPluginPrompt.cancel(player);
+    @Subcommand("prompt cancel")
+    @Description("Drop the push being prepared, committing nothing")
+    public void promptCancel(Player player) {
+        PushUpdatePrompt.cancel(player);
     }
 
-    /** A jar nobody declared is placed in chat first, so nothing is committed unanswered. */
+    /** Everything a push would touch is laid out in chat first, and only a confirm commits it. */
     private void publish(CommandSender sender, String message, boolean confirmed) {
-        // Two sessions would answer for the same jars and commit over each other
-        String busy = NewPluginPrompt.busyWith();
+        // Two sessions would answer for the same files and commit over each other
+        String busy = PushUpdatePrompt.busyWith();
         if (busy != null) {
-            send(sender, busy + " is still placing new plugins, "
-                + "wait for that to finish or drop it with /gitsync newplugin cancel.", NamedTextColor.RED);
+            send(sender, busy + " is still preparing a push, "
+                + "wait for that to finish or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
             return;
         }
 
-        runAsync(sender, "checking for new plugins", git -> {
-            List<String> jars = GitSyncPlugin.instance().gitSyncService().unknownJars();
-            if (jars.isEmpty()) {
-                doPublish(sender, message, confirmed, List.of());
+        runAsync(sender, "checking what would be published", git -> {
+            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+            List<PackRenderer.LocalChange> changes = service.localChanges();
+            List<String> jars = service.unknownJars();
+
+            if (changes.isEmpty() && jars.isEmpty()) {
+                doPublish(sender, message, confirmed, List.of(), Map.of());
                 return;
             }
 
+            // The console has no chat to click in, so it commits the way it always did - except for
+            // a jar nobody declared, which cannot be placed without an answer
             if (!(sender instanceof Player player)) {
-                send(sender, "Nothing was committed, " + jars.size() + " plugin(s) in plugins/ are not part of the pack: "
-                    + String.join(", ", jars), NamedTextColor.YELLOW);
-                send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
+                if (!jars.isEmpty()) {
+                    send(sender, "Nothing was committed, " + jars.size() + " plugin(s) in plugins/ are not part of the pack: "
+                        + String.join(", ", jars), NamedTextColor.YELLOW);
+                    send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
+                    return;
+                }
+                doPublish(sender, message, confirmed, List.of(), Map.of());
                 return;
             }
-            new NewPluginPrompt(player, jars, answers -> doPublish(sender, message, confirmed, answers)).start();
+            new PushUpdatePrompt(player, changes, jars,
+                (plugins, fileLayers) -> doPublish(sender, message, confirmed, plugins, fileLayers)).start();
         });
     }
 
-    private void doPublish(CommandSender sender, String message, boolean confirmed, List<GitSyncService.NewPlugin> newPlugins) {
+    private void doPublish(CommandSender sender, String message, boolean confirmed,
+                           List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers) {
         send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            if (!service.commitAndPush(sender, message, confirmed, newPlugins).isEmpty()) {
-                offerToPublishAnyway(sender, message, newPlugins);
+            if (!service.commitAndPush(sender, message, confirmed, newPlugins, fileLayers).isEmpty()) {
+                offerToPublishAnyway(sender, message, newPlugins, fileLayers);
             }
         });
     }
 
     /** The service already named the lines it could not put back, this is the way past it. */
-    private void offerToPublishAnyway(CommandSender sender, String message, List<GitSyncService.NewPlugin> newPlugins) {
+    private void offerToPublishAnyway(CommandSender sender, String message,
+                                      List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers) {
         if (!(sender instanceof Player)) {
             send(sender, "Add " + CONFIRM_FLAG.trim() + " to the end of the message to publish them anyway.", NamedTextColor.YELLOW);
             return;
@@ -429,7 +441,7 @@ public class GitSyncCommand extends BaseCommand {
         // Carries the answers along, so saying yes here does not ask about every jar again
         sender.sendMessage(Component.text("[publish anyway]").color(NamedTextColor.RED)
                 .hoverEvent(HoverEvent.showText(Component.text("Send this server's own values to every server rendering these files")))
-                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins))));
+                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins, fileLayers))));
     }
 
     /** Run a git action off the main thread on the shared repository handle. */

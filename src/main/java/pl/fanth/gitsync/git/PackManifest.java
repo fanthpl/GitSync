@@ -71,6 +71,16 @@ public class PackManifest {
         return this.plugins.values().stream().anyMatch(entry -> entry.matches(path));
     }
 
+    /** Which plugin in the pack claims this path, null when none of them does. */
+    public String ownerOf(String path) {
+        for (Map.Entry<String, Entry> plugin : this.plugins.entrySet()) {
+            if (plugin.getValue().matches(path)) {
+                return plugin.getKey();
+            }
+        }
+        return null;
+    }
+
     /** Returns the list of plugin entries that are affected by the given changed paths. */
     public List<Entry> getEntriesFor(Collection<String> changedPaths) {
         List<Entry> entries = new ArrayList<>();

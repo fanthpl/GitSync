@@ -340,6 +340,21 @@ public class PackRenderer {
         return target(logical);
     }
 
+    /**
+     * Every file this server holds under the given logical paths, a plain file naming itself. What
+     * a jar joining the pack would drag in with it, before the pack has an entry to ask about it.
+     */
+    public List<String> filesUnder(Collection<String> logicalPaths) throws IOException {
+        Set<String> found = new LinkedHashSet<>();
+        for (String logical : logicalPaths) {
+            String clean = PackManifest.normalize(logical);
+            if (!clean.isEmpty() && !clean.startsWith(OWN_DIRECTORY)) {
+                collect(target(clean), found);
+            }
+        }
+        return List.copyOf(found);
+    }
+
     /** Every declared path that currently exists on this server. */
     private Set<String> declaredOnDisk(PackManifest manifest) throws IOException {
         Set<String> found = new LinkedHashSet<>();

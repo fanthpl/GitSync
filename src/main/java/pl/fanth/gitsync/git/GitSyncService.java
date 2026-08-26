@@ -346,16 +346,18 @@ public class GitSyncService {
 
     /**
      * Publish the edits made on this server: every declared file that drifted goes back into the
-     * layer it was rendered from, a file created here goes to the role layer, and a file deleted
-     * here is dropped from its layer - which re-exposes the copy in the layer below it. Variables
-     * are put back on the way in, so this server's own values stay here.
+     * layer it was rendered from, and a file deleted here is dropped from its layer - which
+     * re-exposes the copy in the layer below it. Variables are put back on the way in, so this
+     * server's own values stay here.
      *
      * @param confirmed publish even the variable lines that cannot be put back
      * @param newPlugins jars this server holds that the admin decided to put into the pack
+     * @param fileLayers where a file the pack has never seen goes, keyed by logical path
      * @return the variable lines that stopped the commit, empty when it went through
      */
     public synchronized List<String> commitAndPush(CommandSender sender, String message, boolean confirmed,
-                                                   List<NewPlugin> newPlugins) throws Exception {
+                                                   List<NewPlugin> newPlugins,
+                                                   Map<String, String> fileLayers) throws Exception {
         PackRenderer renderer = renderer();
         PackRenderer.State state = PackRenderer.State.load(this.stateFile);
 
@@ -374,7 +376,7 @@ public class GitSyncService {
         }
 
         List<PackRenderer.LocalChange> changes = new ArrayList<>(renderer.localChanges(manifest, state));
-        changes.replaceAll(change -> retarget(change, manifest, addedLayers));
+        changes.replaceAll(change -> retarget(change, manifest, addedLayers, fileLayers));
 
         // Worked out before anything is written, so a refusal leaves the pack untouched
         Map<String, PackRenderer.Reversal> reversals = new LinkedHashMap<>();
@@ -436,9 +438,18 @@ public class GitSyncService {
         return List.of();
     }
 
-    /** Everything a plugin joining the pack owns goes to the layer picked for it, not the default. */
+    /**
+     * Where a change really goes. Everything a plugin joining the pack owns follows the layer
+     * picked for that plugin, and a file the pack has never seen follows the layer picked for it -
+     * both of them beat the layer the renderer guessed at.
+     */
     private PackRenderer.LocalChange retarget(PackRenderer.LocalChange change, PackManifest manifest,
-                                              Map<String, String> addedLayers) {
+                                              Map<String, String> addedLayers, Map<String, String> fileLayers) {
+        String picked = fileLayers.get(change.logicalPath());
+        if (picked != null) {
+            return new PackRenderer.LocalChange(change.logicalPath(), change.kind(), picked);
+        }
+        // Nobody named this one, so a plugin joining the pack takes whatever it owns along with it
         for (Map.Entry<String, String> added : addedLayers.entrySet()) {
             if (manifest.plugins.get(added.getKey()).matches(change.logicalPath())) {
                 return new PackRenderer.LocalChange(change.logicalPath(), change.kind(), added.getValue());
