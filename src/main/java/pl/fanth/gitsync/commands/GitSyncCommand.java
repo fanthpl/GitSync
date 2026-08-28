@@ -58,6 +58,7 @@ public class GitSyncCommand extends BaseCommand {
         // A session read back from disk has no callback of its own, so the way to commit is handed
         // over once, here, rather than captured when the prompt is started
         PushUpdatePrompt.publisher(this::doPublish);
+        PushUpdatePrompt.editor(this::doSaveEntry);
     }
 
     @HelpCommand
@@ -171,13 +172,19 @@ public class GitSyncCommand extends BaseCommand {
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
             List<PackRenderer.LocalChange> changes = service.localChanges();
             List<String> unknown = service.unknownJars();
+            boolean packEdited = service.packEdited();
 
-            if (changes.isEmpty() && unknown.isEmpty()) {
+            if (changes.isEmpty() && unknown.isEmpty() && !packEdited) {
                 send(sender, "No local edits, this server matches the pack.", NamedTextColor.GREEN);
                 return;
             }
 
             send(sender, "--- Local edits ---", NamedTextColor.GOLD);
+            if (packEdited) {
+                sender.sendMessage(Component.text("[M] ").color(NamedTextColor.YELLOW)
+                    .append(Component.text("pack.json").color(NamedTextColor.WHITE))
+                    .append(Component.text(" (the pack composition, edited here)").color(NamedTextColor.GRAY)));
+            }
             for (PackRenderer.LocalChange change : changes) {
                 sender.sendMessage(Component.text(prefixOf(change.kind())).color(colorOf(change.kind()))
                     .append(Component.text(change.logicalPath()).color(NamedTextColor.WHITE))
@@ -349,6 +356,28 @@ public class GitSyncCommand extends BaseCommand {
         publish(sender, cleaned, confirmed);
     }
 
+    @Subcommand("pack edit")
+    @Description("Edit a plugin the pack already has: its wildcard, config paths and reload commands")
+    @Syntax("<plugin>")
+    @CommandCompletion("@packplugins")
+    public void packEdit(Player player, String name) {
+        String busy = PushUpdatePrompt.busyWith();
+        if (busy != null) {
+            send(player, busy + " started a push that is still waiting to be answered, "
+                + "pick it up with /gitsync prompt show or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
+            return;
+        }
+
+        runAsync(player, "reading the pack entry", git -> {
+            PackManifest.Entry entry = GitSyncPlugin.instance().gitSyncService().manifest().plugins.get(name);
+            if (entry == null) {
+                send(player, name + " is not in the pack, /gitsync status lists what is.", NamedTextColor.RED);
+                return;
+            }
+            new PushUpdatePrompt(player, name, entry).start();
+        });
+    }
+
     // The three below are only ever reached by clicking a button the prompt prints, which puts the
     // command in the chat box for the value to be typed after it. Split so the config path is the
     // only one completed against the files on disk.
@@ -433,6 +462,12 @@ public class GitSyncCommand extends BaseCommand {
                 offerToPublishAnyway(sender, message, newPlugins, fileLayers);
             }
         });
+    }
+
+    /** Only the local pack.json is written, the next pushupdate is what publishes it. */
+    private void doSaveEntry(CommandSender sender, String name, PackManifest.Entry entry) {
+        runAsync(sender, "saving the pack entry", git ->
+                GitSyncPlugin.instance().gitSyncService().saveEntry(sender, name, entry));
     }
 
     /** The service already named the lines it could not put back, this is the way past it. */

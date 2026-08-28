@@ -51,6 +51,9 @@ public final class GitSyncPlugin extends JavaPlugin {
         manager.getCommandCompletions().registerAsyncCompletion("pluginfiles",
                 context -> PluginFileCompletion.complete(context.getInput()));
 
+        manager.getCommandCompletions().registerAsyncCompletion("packplugins",
+                context -> this.gitSyncService.manifest().plugins.keySet());
+
         manager.registerCommand(new GitSyncCommand());
     }
 

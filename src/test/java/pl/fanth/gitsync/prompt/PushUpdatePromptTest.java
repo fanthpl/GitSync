@@ -16,6 +16,7 @@ class PushUpdatePromptTest {
               "starter": "Steve",
               "message": "a commit message",
               "confirmed": true,
+              "editing": false,
               "plugins": [
                 {"jar":"Thing-1.0.jar","name":"Thing","configPaths":["Thing"],"reloadCommands":["thing reload"],"wildcard":"Thing-*.jar","submitted":true,"ignored":false}
               ],

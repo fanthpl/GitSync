@@ -45,6 +45,9 @@ import java.util.logging.Level;
  * <p>
  * Nothing is written anywhere until confirm is clicked, so cancelling or walking away leaves the
  * pack and this server exactly as they were.
+ * <p>
+ * The very same plugin screen also edits an entry the pack already has, which is the one case that
+ * stops there: it only writes the local pack.json, and the next pushupdate is what publishes it.
  */
 public class PushUpdatePrompt {
     /**
@@ -61,6 +64,7 @@ public class PushUpdatePrompt {
     private static final int SUMMARY_LINES = 20;
     /** Set once at startup, so a session read back from disk still knows where to commit. */
     private static Publisher publisher;
+    private static Editor editor;
 
     /** Whoever is looking at it right now - not part of the session, so it is never saved. */
     private transient Player viewer;
@@ -68,6 +72,8 @@ public class PushUpdatePrompt {
     private String starter;
     private String message;
     private boolean confirmed;
+    /** An entry the pack already has, edited on its own - one screen, and no file is staged. */
+    private boolean editing;
     private final List<PluginDraft> plugins = new ArrayList<>();
     /** What a jar joining the pack brings with it, rebuilt as the config paths are typed in. */
     private final List<FileGroup> pluginGroups = new ArrayList<>();
@@ -112,6 +118,27 @@ public class PushUpdatePrompt {
         grouped.forEach((owner, files) -> this.fileGroups.add(new FileGroup(owner, files)));
     }
 
+    /**
+     * The same screen a jar joining the pack gets, for a plugin already in it. The jar itself is
+     * not in hand here - the entry is matched to one by its wildcard - so only the three things
+     * pack.json holds are on the screen.
+     */
+    public PushUpdatePrompt(Player player, String name, PackManifest.Entry entry) {
+        this.viewer = player;
+        this.starter = player.getName();
+        this.editing = true;
+
+        PluginDraft draft = new PluginDraft(null, name,
+            entry.pluginJarWildcard == null ? "" : entry.pluginJarWildcard);
+        if (entry.configPaths != null) {
+            draft.configPaths.addAll(entry.configPaths);
+        }
+        if (entry.reloadCommands != null) {
+            draft.reloadCommands.addAll(entry.reloadCommands);
+        }
+        this.plugins.add(draft);
+    }
+
     /** Where the answers go once they are confirmed, which a restart cannot bring back by itself. */
     public interface Publisher {
         void publish(CommandSender sender, String message, boolean confirmed,
@@ -120,6 +147,15 @@ public class PushUpdatePrompt {
 
     public static void publisher(Publisher publisher) {
         PushUpdatePrompt.publisher = publisher;
+    }
+
+    /** Where an edited entry goes, which is the local pack.json - published by the next pushupdate. */
+    public interface Editor {
+        void edit(CommandSender sender, String name, PackManifest.Entry entry);
+    }
+
+    public static void editor(Editor editor) {
+        PushUpdatePrompt.editor = editor;
     }
 
     public void start() {
@@ -284,9 +320,15 @@ public class PushUpdatePrompt {
      * claims no file at all, so the jar would never reach the pack. Refused, with the old one kept.
      */
     private void setWildcard(PluginDraft draft, String value) {
+        if (value.isBlank()) {
+            say("A wildcard is what the pack matches jars by, it cannot be empty.", NamedTextColor.RED);
+            return;
+        }
+
         PackManifest.Entry probe = new PackManifest.Entry();
         probe.pluginJarWildcard = value;
-        if (probe.matchesJar(draft.jar)) {
+        // An entry already in the pack is edited without its jar in hand, nothing here to match it against
+        if (draft.jar == null || probe.matchesJar(draft.jar)) {
             draft.wildcard = value;
             return;
         }
@@ -313,8 +355,11 @@ public class PushUpdatePrompt {
     private void renderPlugin(int printed) {
         PluginDraft draft = this.plugins.get(this.index);
 
-        header(printed, draft.name + " (" + (this.index + 1) + " of " + this.plugins.size() + ")");
-        this.viewer.sendMessage(field("Jar", draft.jar));
+        header(printed, this.editing ? draft.name + " (in the pack)"
+            : draft.name + " (" + (this.index + 1) + " of " + this.plugins.size() + ")");
+        if (!this.editing) {
+            this.viewer.sendMessage(field("Jar", draft.jar));
+        }
         this.viewer.sendMessage(Component.empty()
             .append(field("Wildcard", draft.wildcard))
             .append(Component.space())
@@ -325,6 +370,16 @@ public class PushUpdatePrompt {
         list(draft.reloadCommands, "Reload commands", "reload", "reload command", printed, false);
 
         this.viewer.sendMessage(Component.empty());
+        if (this.editing) {
+            // Where its files go is not asked: the ones it already had keep the layer they sit in,
+            // and a config path added here brings its files to the next /gitsync pushupdate
+            this.viewer.sendMessage(Component.empty()
+                .append(button("[save]", NamedTextColor.GREEN, "Write the entry into the local pack.json, pushed by the next pushupdate")
+                    .decorate(TextDecoration.BOLD)
+                    .clickEvent(ClickEvent.callback(audience -> click(audience, printed, this::saveEntry))))
+                .append(Component.space()).append(cancelButton(printed)));
+            return;
+        }
         // The layer is not asked for here: it belongs with every other placement, on one screen
         // where a plugin can be put wherever the files around it are going
         this.viewer.sendMessage(Component.empty()
@@ -490,6 +545,18 @@ public class PushUpdatePrompt {
         this.viewer.sendMessage(Component.text("  " + prefixOf(kind)).color(colorOfKind(kind))
             .append(Component.text(path).color(NamedTextColor.WHITE))
             .append(Component.text(" -> " + layer).color(NamedTextColor.GRAY)));
+    }
+
+    /** Only the local pack.json is written, so nothing reaches the remote until a pushupdate. */
+    private void saveEntry() {
+        PluginDraft draft = this.plugins.get(0);
+        PackManifest.Entry entry = new PackManifest.Entry();
+        entry.pluginJarWildcard = draft.wildcard;
+        entry.configPaths = new ArrayList<>(draft.configPaths);
+        entry.reloadCommands = new ArrayList<>(draft.reloadCommands);
+
+        drop();
+        editor.edit(this.viewer, draft.name, entry);
     }
 
     private void confirm() {
@@ -778,6 +845,7 @@ public class PushUpdatePrompt {
 
     /** One jar as it stands, kept per plugin so the arrows have something to walk back into. */
     private static final class PluginDraft {
+        /** Null for an entry already in the pack, which is edited without the jar in hand. */
         private final String jar;
         /** What the plugin calls itself, as opposed to what its file is called. */
         private final String name;

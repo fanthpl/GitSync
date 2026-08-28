@@ -439,6 +439,32 @@ public class GitSyncService {
     }
 
     /**
+     * Has pack.json been edited here since the last commit? A /gitsync pack edit only writes it,
+     * so this is the only trace of it until a pushupdate carries it along.
+     */
+    public boolean packEdited() throws Exception {
+        return !this.git.status().addPath("pack.json").call().isClean();
+    }
+
+    /**
+     * Write an edited entry into the local pack.json, committing nothing: it rides along with the
+     * next pushupdate, the same commit that publishes the files a new config path now claims.
+     */
+    public synchronized void saveEntry(CommandSender sender, String name, PackManifest.Entry entry) throws Exception {
+        PackManifest manifest = readManifest();
+        manifest.plugins.put(name, entry);
+        Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
+
+        // The plugin is already loaded here, so its edited entry asks for no restart of ours -
+        // without this the auto sync would read the new hash as the pack composition changing
+        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+        state.packHash = packHash();
+        state.save(this.stateFile);
+        reply(sender, name + " updated in the local pack.json, nothing was pushed yet.", NamedTextColor.GREEN);
+        reply(sender, "Run /gitsync pushupdate to publish it together with the files it claims.", NamedTextColor.YELLOW);
+    }
+
+    /**
      * Where a change really goes. Everything a plugin joining the pack owns follows the layer
      * picked for that plugin, and a file the pack has never seen follows the layer picked for it -
      * both of them beat the layer the renderer guessed at.
