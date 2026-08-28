@@ -1,11 +1,15 @@
 package pl.fanth.gitsync.prompt;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import pl.fanth.gitsync.GitSyncPlugin;
 import pl.fanth.gitsync.config.DataConfiguration;
@@ -14,14 +18,14 @@ import pl.fanth.gitsync.git.PackManifest;
 import pl.fanth.gitsync.git.PackRenderer;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiConsumer;
+import java.util.logging.Level;
 
 /**
  * Walks the admin through everything a push would publish, and commits nothing until it is
@@ -43,14 +47,27 @@ import java.util.function.BiConsumer;
  * pack and this server exactly as they were.
  */
 public class PushUpdatePrompt {
-    /** Only one session at a time, two of them would race each other into the same commit. */
-    private static final Map<UUID, PushUpdatePrompt> ACTIVE = new ConcurrentHashMap<>();
+    /**
+     * One session for the whole server, shared: whoever runs /gitsync prompt show answers the same
+     * questions the last admin left behind, and it outlives both their logout and a restart.
+     */
+    private static volatile PushUpdatePrompt active;
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     /** Adding a value needs it typed out, and a click can only put a command in the chat box. */
     private static final String INPUT_COMMAND = "/gitsync prompt ";
-    /** A session holds everyone else off, so one that is walked away from cannot hold forever. */
-    private static final int TIMEOUT_MINUTES = 10;
+    /** Two lines per file, and the chat keeps around a hundred - a page has to leave room to read. */
+    private static final int FILES_PER_PAGE = 8;
+    /** The summary is there to be read before confirming, which a thousand lines is not. */
+    private static final int SUMMARY_LINES = 20;
+    /** Set once at startup, so a session read back from disk still knows where to commit. */
+    private static Publisher publisher;
 
-    private final Player player;
+    /** Whoever is looking at it right now - not part of the session, so it is never saved. */
+    private transient Player viewer;
+    /** Who started it, for the message a second push gets. */
+    private String starter;
+    private String message;
+    private boolean confirmed;
     private final List<PluginDraft> plugins = new ArrayList<>();
     /** What a jar joining the pack brings with it, rebuilt as the config paths are typed in. */
     private final List<FileGroup> pluginGroups = new ArrayList<>();
@@ -58,19 +75,24 @@ public class PushUpdatePrompt {
     private final List<FileGroup> fileGroups = new ArrayList<>();
     /** Edited and deleted files, which already know the layer they came from. */
     private final List<PackRenderer.LocalChange> tracked = new ArrayList<>();
-    private final BiConsumer<List<GitSyncService.NewPlugin>, Map<String, String>> onConfirmed;
 
     /** Which screen is up: a plugin, then the new files, then the summary. */
     private int index;
-    /** Set by the constructor off the main thread, read by whoever tries to commit next. */
-    private volatile long touched = System.currentTimeMillis();
+    /** How far down the file list of the screen that is up, for the groups too long to print at once. */
+    private int page;
     /** Bumped by every print, so the buttons still sitting further up the chat go quiet. */
     private int generation;
 
+    /** For Gson, which fills the fields in itself. */
+    private PushUpdatePrompt() {
+    }
+
     public PushUpdatePrompt(Player player, List<PackRenderer.LocalChange> changes, List<String> jars,
-                            BiConsumer<List<GitSyncService.NewPlugin>, Map<String, String>> onConfirmed) {
-        this.player = player;
-        this.onConfirmed = onConfirmed;
+                            String message, boolean confirmed) {
+        this.viewer = player;
+        this.starter = player.getName();
+        this.message = message;
+        this.confirmed = confirmed;
         for (String jar : jars) {
             this.plugins.add(new PluginDraft(jar, service().pluginName(jar), PackRenderer.deriveWildcard(jar)));
         }
@@ -90,15 +112,66 @@ public class PushUpdatePrompt {
         grouped.forEach((owner, files) -> this.fileGroups.add(new FileGroup(owner, files)));
     }
 
+    /** Where the answers go once they are confirmed, which a restart cannot bring back by itself. */
+    public interface Publisher {
+        void publish(CommandSender sender, String message, boolean confirmed,
+                     List<GitSyncService.NewPlugin> plugins, Map<String, String> fileLayers);
+    }
+
+    public static void publisher(Publisher publisher) {
+        PushUpdatePrompt.publisher = publisher;
+    }
+
     public void start() {
-        ACTIVE.put(this.player.getUniqueId(), this);
+        active = this;
         render();
     }
 
-    /** Who is publishing right now, null when nobody is. A second push has to wait. */
+    /** Who started the session waiting to be answered, null when there is none. */
     public static String busyWith() {
-        ACTIVE.values().removeIf(PushUpdatePrompt::expired);
-        return ACTIVE.values().stream().findFirst().map(prompt -> prompt.player.getName()).orElse(null);
+        PushUpdatePrompt prompt = session();
+        return prompt == null ? null : prompt.starter;
+    }
+
+    /** The one session there is, read back from disk the first time it is asked for after a restart. */
+    private static synchronized PushUpdatePrompt session() {
+        if (active == null) {
+            try {
+                Path file = file();
+                if (Files.isRegularFile(file)) {
+                    active = GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), PushUpdatePrompt.class);
+                }
+            } catch (Exception exception) {
+                // A file nobody can read is a session nobody can answer, so it is dropped
+                GitSyncPlugin.instance().getLogger().log(Level.WARNING, "Could not read the saved push prompt", exception);
+                drop();
+            }
+        }
+        return active;
+    }
+
+    private static Path file() {
+        return GitSyncPlugin.instance().getDataFolder().toPath().resolve("prompt.json");
+    }
+
+    /** Every answer is written out, so a restart mid-session picks up where the admin left off. */
+    private void save() {
+        try {
+            Path file = file();
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, GSON.toJson(this), StandardCharsets.UTF_8);
+        } catch (IOException exception) {
+            GitSyncPlugin.instance().getLogger().log(Level.WARNING, "Could not save the push prompt", exception);
+        }
+    }
+
+    private static void drop() {
+        active = null;
+        try {
+            Files.deleteIfExists(file());
+        } catch (IOException exception) {
+            GitSyncPlugin.instance().getLogger().log(Level.WARNING, "Could not delete the saved push prompt", exception);
+        }
     }
 
     /** A value the admin typed after clicking one of the [+] buttons. */
@@ -119,48 +192,37 @@ public class PushUpdatePrompt {
 
     /** Nothing has been written yet, so dropping the session is the whole of cancelling it. */
     public static void cancel(Player player) {
-        if (ACTIVE.remove(player.getUniqueId()) == null) {
-            player.sendMessage(Component.text("You are not publishing anything.").color(NamedTextColor.RED));
+        if (session() == null) {
+            player.sendMessage(Component.text("Nothing is waiting to be published.").color(NamedTextColor.RED));
             return;
         }
+        drop();
         player.sendMessage(Component.text("Cancelled, nothing was committed.").color(NamedTextColor.YELLOW));
     }
 
-    /** Nothing is committed halfway, so a prompt left behind is only worth forgetting. */
-    public static void forget(Player player) {
-        ACTIVE.remove(player.getUniqueId());
-    }
-
     private static PushUpdatePrompt of(Player player) {
-        PushUpdatePrompt prompt = ACTIVE.get(player.getUniqueId());
+        PushUpdatePrompt prompt = session();
         if (prompt == null) {
             player.sendMessage(Component.text("Nothing is waiting to be published, run /gitsync pushupdate first.")
                 .color(NamedTextColor.RED));
             return null;
         }
+        // The session is everyone's, so whoever asked about it last is who it prints to
+        prompt.viewer = player;
         return prompt.alive() ? prompt : null;
     }
 
-    private boolean expired() {
-        return System.currentTimeMillis() - this.touched > TIMEOUT_MINUTES * 60_000L;
-    }
-
-    /** Anything the admin does keeps the session going, and the first thing after ten idle minutes ends it. */
+    /**
+     * The chat keeps every button this session ever printed, so once it is confirmed or cancelled
+     * they have to go quiet - editing a draft that was already committed changes nothing but what
+     * the next screen claims is about to be pushed.
+     */
     private boolean alive() {
-        // The chat keeps every button this session ever printed, so once it is confirmed or
-        // cancelled they have to go quiet - editing a draft that was already committed changes
-        // nothing but what the next screen claims is about to be pushed
-        if (ACTIVE.get(this.player.getUniqueId()) != this) {
+        if (active != this) {
             say("That push is already done, run /gitsync pushupdate again to publish more.",
                 NamedTextColor.RED);
             return false;
         }
-        if (expired()) {
-            ACTIVE.remove(this.player.getUniqueId());
-            say("Your push timed out after " + TIMEOUT_MINUTES + " minutes, nothing was committed.", NamedTextColor.RED);
-            return false;
-        }
-        this.touched = System.currentTimeMillis();
         return true;
     }
 
@@ -233,8 +295,10 @@ public class PushUpdatePrompt {
 
     private void render() {
         int printed = ++this.generation;
+        // Every answer arrives here on its way to the screen, so this is the one place worth saving
+        save();
 
-        this.player.sendMessage(Component.text("=== ATTENTION REQUIRED ===")
+        this.viewer.sendMessage(Component.text("=== ATTENTION REQUIRED ===")
             .color(NamedTextColor.RED).decorate(TextDecoration.BOLD));
         if (this.index < this.plugins.size()) {
             renderPlugin(printed);
@@ -250,8 +314,8 @@ public class PushUpdatePrompt {
         PluginDraft draft = this.plugins.get(this.index);
 
         header(printed, draft.name + " (" + (this.index + 1) + " of " + this.plugins.size() + ")");
-        this.player.sendMessage(field("Jar", draft.jar));
-        this.player.sendMessage(Component.empty()
+        this.viewer.sendMessage(field("Jar", draft.jar));
+        this.viewer.sendMessage(Component.empty()
             .append(field("Wildcard", draft.wildcard))
             .append(Component.space())
             .append(button("[edit]", NamedTextColor.YELLOW, "Type a different wildcard for this jar")
@@ -260,13 +324,13 @@ public class PushUpdatePrompt {
         list(draft.configPaths, "Config paths", "config", "config path", printed, true);
         list(draft.reloadCommands, "Reload commands", "reload", "reload command", printed, false);
 
-        this.player.sendMessage(Component.empty());
+        this.viewer.sendMessage(Component.empty());
         // The layer is not asked for here: it belongs with every other placement, on one screen
         // where a plugin can be put wherever the files around it are going
-        this.player.sendMessage(Component.empty()
+        this.viewer.sendMessage(Component.empty()
             .append(button("[submit]", NamedTextColor.GREEN, "Put " + draft.name + " in the pack, layer picked later")
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.callback(audience -> click(printed, () -> {
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                     draft.submitted = true;
                     draft.ignored = false;
                     advance();
@@ -285,38 +349,74 @@ public class PushUpdatePrompt {
         List<FileGroup> groups = groups();
         FileGroup files = groups.get(group);
         long placed = files.drafts.stream().filter(FileDraft::answered).count();
+        // A plugin like ItemsAdder brings thousands of files, and a row each would push the top
+        // row - the one that settles all of them at once - clean out of the chat
+        int pages = (files.drafts.size() + FILES_PER_PAGE - 1) / FILES_PER_PAGE;
+        this.page = Math.max(0, Math.min(this.page, pages - 1));
 
         header(printed, files.owner + " files (" + (group + 1) + " of " + groups.size() + ")");
         say("Pick where they go - " + placed + " of " + files.drafts.size() + " placed.",
             NamedTextColor.GRAY);
 
-        this.player.sendMessage(Component.text("All of them: ").color(NamedTextColor.AQUA)
+        this.viewer.sendMessage(Component.text("All of them: ").color(NamedTextColor.AQUA)
             .append(layerRow(printed, files.commonLayer(),
                 "Publish every file of " + files.owner + " in ",
                 layer -> files.drafts.forEach(draft -> draft.layer = layer))));
 
-        for (FileDraft draft : files.drafts) {
-            this.player.sendMessage(Component.empty()
+        int from = this.page * FILES_PER_PAGE;
+        int to = Math.min(from + FILES_PER_PAGE, files.drafts.size());
+        for (FileDraft draft : files.drafts.subList(from, to)) {
+            this.viewer.sendMessage(Component.empty()
                 .append(Component.text("  " + draft.path).color(NamedTextColor.WHITE))
                 .append(Component.text(draft.answered() ? " -> " + draft.layer : " -> ?").color(NamedTextColor.GRAY)));
-            this.player.sendMessage(Component.text("    ")
+            this.viewer.sendMessage(Component.text("    ")
                 .append(layerRow(printed, draft.layer, "Publish " + draft.path + " in ",
                     layer -> draft.layer = layer)));
         }
+        if (pages > 1) {
+            this.viewer.sendMessage(Component.empty()
+                .append(pageButton("«", this.page - 1, this.page > 0, printed))
+                .append(Component.text(" files " + (from + 1) + "-" + to + " of " + files.drafts.size()
+                    + ", the row above settles them all at once ").color(NamedTextColor.GRAY))
+                .append(pageButton("»", this.page + 1, this.page + 1 < pages, printed)));
+        }
 
-        this.player.sendMessage(Component.empty());
-        this.player.sendMessage(Component.empty()
+        this.viewer.sendMessage(Component.empty());
+        this.viewer.sendMessage(Component.empty()
             .append(button("[submit]", NamedTextColor.GREEN, "Publish these files where they are placed")
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.callback(audience -> click(printed, () -> {
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                     // Moving on with a file still unplaced would publish it wherever the renderer guessed
                     if (!files.answered()) {
-                        say("Every file needs a layer first.", NamedTextColor.RED);
+                        // Which page it is on is not worth hunting for by hand
+                        this.page = firstUnplaced(files) / FILES_PER_PAGE;
+                        say("Every file needs a layer first, the ones below are still open.", NamedTextColor.RED);
+                        render();
                         return;
                     }
                     advance();
                 }))))
             .append(Component.space()).append(cancelButton(printed)));
+    }
+
+    private int firstUnplaced(FileGroup files) {
+        for (int i = 0; i < files.drafts.size(); i++) {
+            if (!files.drafts.get(i).answered()) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private Component pageButton(String label, int target, boolean enabled, int printed) {
+        if (!enabled) {
+            return Component.text(label).color(NamedTextColor.DARK_GRAY);
+        }
+        return button(label, NamedTextColor.AQUA, "More files")
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
+                this.page = target;
+                render();
+            })));
     }
 
     /** One button per layer, the one already picked in bold. */
@@ -338,7 +438,7 @@ public class PushUpdatePrompt {
         if (!this.plugins.isEmpty()) {
             say("New plugins:", NamedTextColor.GRAY);
             for (PluginDraft draft : this.plugins) {
-                this.player.sendMessage(Component.text("  " + draft.name + " ").color(NamedTextColor.WHITE)
+                this.viewer.sendMessage(Component.text("  " + draft.name + " ").color(NamedTextColor.WHITE)
                     .append(Component.text("-> " + placementOf(draft)).color(NamedTextColor.GRAY)));
                 if (!draft.ignored) {
                     say("    configs: " + summarize(draft.configPaths), NamedTextColor.DARK_GRAY);
@@ -352,36 +452,48 @@ public class PushUpdatePrompt {
             say("No file on this server differs from the pack.", NamedTextColor.GRAY);
         } else {
             say("Files:", NamedTextColor.GRAY);
+            // A plugin bringing thousands of files would otherwise bury the confirm button under
+            // a list nobody can scroll back through anyway
+            int total = groups.stream().mapToInt(group -> group.drafts.size()).sum() + this.tracked.size();
+            int left = SUMMARY_LINES;
             for (FileGroup group : groups) {
                 for (FileDraft draft : group.drafts) {
-                    fileLine(PackRenderer.Kind.NEW, draft.path, draft.layer);
+                    if (left-- > 0) {
+                        fileLine(PackRenderer.Kind.NEW, draft.path, draft.layer);
+                    }
                 }
             }
             for (PackRenderer.LocalChange change : this.tracked) {
-                fileLine(change.kind(), change.logicalPath(), change.targetLayer());
+                if (left-- > 0) {
+                    fileLine(change.kind(), change.logicalPath(), change.targetLayer());
+                }
+            }
+            if (total > SUMMARY_LINES) {
+                say("  ... and " + (total - SUMMARY_LINES) + " more, /gitsync git status lists every one.",
+                    NamedTextColor.GRAY);
             }
         }
 
-        this.player.sendMessage(Component.empty());
-        this.player.sendMessage(Component.empty()
+        this.viewer.sendMessage(Component.empty());
+        this.viewer.sendMessage(Component.empty()
             .append(arrow("«", this.index - 1, this.index > 0, printed))
             .append(Component.space())
             .append(button("[confirm and push]", NamedTextColor.GREEN, "Commit everything above and push it")
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.callback(audience -> click(printed, this::confirm))))
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, this::confirm))))
             .append(Component.space())
             .append(cancelButton(printed)));
     }
 
     /** The same shape /gitsync git status prints, so the two read alike. */
     private void fileLine(PackRenderer.Kind kind, String path, String layer) {
-        this.player.sendMessage(Component.text("  " + prefixOf(kind)).color(colorOfKind(kind))
+        this.viewer.sendMessage(Component.text("  " + prefixOf(kind)).color(colorOfKind(kind))
             .append(Component.text(path).color(NamedTextColor.WHITE))
             .append(Component.text(" -> " + layer).color(NamedTextColor.GRAY)));
     }
 
     private void confirm() {
-        ACTIVE.remove(this.player.getUniqueId());
+        drop();
 
         // Held back until now, so a cancelled session never leaves a jar marked private
         DataConfiguration data = GitSyncPlugin.instance().dataConfiguration();
@@ -409,13 +521,13 @@ public class PushUpdatePrompt {
         for (FileGroup group : groups()) {
             group.drafts.forEach(draft -> fileLayers.put(draft.path, draft.layer));
         }
-        this.onConfirmed.accept(answers, fileLayers);
+        publisher.publish(this.viewer, this.message, this.confirmed, answers, fileLayers);
     }
 
     private void header(int printed, String title) {
         // Started from an empty component: a child inherits the click of whatever it is appended
         // to, so hanging the title off the arrow would make the title itself a button
-        this.player.sendMessage(Component.empty()
+        this.viewer.sendMessage(Component.empty()
             .append(arrow("«", this.index - 1, this.index > 0, printed))
             .append(Component.text(" " + title + " ").color(NamedTextColor.GOLD))
             .append(arrow("»", this.index + 1, canLeaveForward(), printed)));
@@ -430,19 +542,19 @@ public class PushUpdatePrompt {
                 ? button("!", NamedTextColor.RED, "Nothing sits at this path on this server")
                     .decorate(TextDecoration.BOLD).append(Component.space())
                 : Component.text("  ");
-            this.player.sendMessage(Component.empty()
+            this.viewer.sendMessage(Component.empty()
                 .append(line)
                 .append(Component.text(values.get(i)).color(NamedTextColor.WHITE))
                 .append(Component.space())
                 .append(button("[-]", NamedTextColor.RED, "Drop " + values.get(i))
-                    .clickEvent(ClickEvent.callback(audience -> click(printed, () -> {
+                    .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                         if (removed < values.size()) {
                             values.remove(removed);
                         }
                         render();
                     })))));
         }
-        this.player.sendMessage(Component.text("  ")
+        this.viewer.sendMessage(Component.text("  ")
             .append(button("[+ add " + what + "]", NamedTextColor.GREEN, "Type the " + what + " to add")
                 .clickEvent(ClickEvent.suggestCommand(INPUT_COMMAND + field + " "))));
     }
@@ -453,7 +565,7 @@ public class PushUpdatePrompt {
             return Component.text(label).color(NamedTextColor.DARK_GRAY);
         }
         return button(label, NamedTextColor.AQUA, "To " + titleOf(target))
-            .clickEvent(ClickEvent.callback(audience -> click(printed, () -> {
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                 // A config path typed in since this line was printed can change what the screens are
                 refreshPluginGroups();
                 goTo(target);
@@ -528,7 +640,7 @@ public class PushUpdatePrompt {
     private Component layerButton(String layer, String picked, java.util.function.Consumer<String> pick,
                                   String hover, int printed) {
         Component button = button("[" + layer + "]", colorOf(layer), hover + layer + " - " + meaningOf(layer))
-            .clickEvent(ClickEvent.callback(audience -> click(printed, () -> pick.accept(layer))));
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> pick.accept(layer))));
         return layer.equals(picked) ? button.decorate(TextDecoration.BOLD) : button;
     }
 
@@ -536,7 +648,7 @@ public class PushUpdatePrompt {
         String wildcard = PackRenderer.deriveWildcard(draft.jar);
         return button("[keep private]", NamedTextColor.DARK_GRAY,
             "Never ask about " + wildcard + " on this server again")
-            .clickEvent(ClickEvent.callback(audience -> click(printed, () -> {
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                 draft.ignored = true;
                 draft.submitted = false;
                 advance();
@@ -545,7 +657,7 @@ public class PushUpdatePrompt {
 
     private Component cancelButton(int printed) {
         return button("[cancel]", NamedTextColor.RED, "Drop the whole thing, nothing is committed")
-            .clickEvent(ClickEvent.callback(audience -> click(printed, () -> cancel(this.player))));
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> cancel(this.viewer))));
     }
 
     /** On to the first screen still holding a question, and to the summary when none is left. */
@@ -570,11 +682,16 @@ public class PushUpdatePrompt {
     /** The screens a submitted jar adds shift as it is submitted, so the target is kept in range. */
     private void goTo(int screen) {
         this.index = Math.min(screen, summaryScreen());
+        this.page = 0;
         render();
     }
 
     /** The chat keeps every version of the block, only the buttons of the newest one still work. */
-    private void click(int printed, Runnable action) {
+    private void click(Audience audience, int printed, Runnable action) {
+        // Whoever clicked is who the next screen goes to, the session itself belongs to everyone
+        if (audience instanceof Player player) {
+            this.viewer = player;
+        }
         if (!alive()) {
             return;
         }
@@ -648,7 +765,7 @@ public class PushUpdatePrompt {
     }
 
     private void say(String message, NamedTextColor color) {
-        this.player.sendMessage(Component.text(message).color(color));
+        this.viewer.sendMessage(Component.text(message).color(color));
     }
 
     private PackRenderer renderer() {

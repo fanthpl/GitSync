@@ -35,6 +35,8 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'com.google.code.gson:gson:2.11.0'
+    // The prompt is saved as json, and reading it back walks fields typed by the Paper API
+    testImplementation "io.papermc.paper:paper-api:1.21.5-R0.1-SNAPSHOT"
 }
 
 test {

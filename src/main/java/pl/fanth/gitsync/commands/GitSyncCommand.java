@@ -54,6 +54,12 @@ public class GitSyncCommand extends BaseCommand {
     /** Tacked onto the commit message to publish variable lines that cannot be put back. */
     private static final String CONFIRM_FLAG = " --confirm";
 
+    public GitSyncCommand() {
+        // A session read back from disk has no callback of its own, so the way to commit is handed
+        // over once, here, rather than captured when the prompt is started
+        PushUpdatePrompt.publisher(this::doPublish);
+    }
+
     @HelpCommand
     public void doHelp(CommandSender sender, CommandHelp help) {
         help.showHelp();
@@ -386,8 +392,8 @@ public class GitSyncCommand extends BaseCommand {
         // Two sessions would answer for the same files and commit over each other
         String busy = PushUpdatePrompt.busyWith();
         if (busy != null) {
-            send(sender, busy + " is still preparing a push, "
-                + "wait for that to finish or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
+            send(sender, busy + " started a push that is still waiting to be answered, "
+                + "pick it up with /gitsync prompt show or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
             return;
         }
 
@@ -413,8 +419,7 @@ public class GitSyncCommand extends BaseCommand {
                 doPublish(sender, message, confirmed, List.of(), Map.of());
                 return;
             }
-            new PushUpdatePrompt(player, changes, jars,
-                (plugins, fileLayers) -> doPublish(sender, message, confirmed, plugins, fileLayers)).start();
+            new PushUpdatePrompt(player, changes, jars, message, confirmed).start();
         });
     }
 

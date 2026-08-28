@@ -8,9 +8,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
 import pl.fanth.gitsync.GitSyncPlugin;
-import pl.fanth.gitsync.prompt.PushUpdatePrompt;
 
 public class PlayerListener implements Listener {
 
@@ -32,10 +30,5 @@ public class PlayerListener implements Listener {
         }, 60L);
     }
 
-    /** A half answered prompt commits nothing, so leaving is the same as never having started it. */
-    @EventHandler
-    public void onQuit(PlayerQuitEvent event) {
-        PushUpdatePrompt.forget(event.getPlayer());
-    }
 
 }
