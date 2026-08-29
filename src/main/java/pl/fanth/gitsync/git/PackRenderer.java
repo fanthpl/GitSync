@@ -36,11 +36,14 @@ public class PackRenderer {
     private static final Pattern VERSION_START = Pattern.compile("[-_]\\d");
     /** Our own data directory, a pack entry pointing in there would overwrite the pack itself. */
     private static final String OWN_DIRECTORY = "GitSync/";
+    /** The prefix every one of our variables carries in a packed file. */
+    public static final String VARIABLE_PREFIX = "GITSYNC_";
     /**
-     * A per-server value in a packed file. The name deliberately cannot hold a colon, so the
-     * ${placeholder:default} syntax other plugins use is never mistaken for one of ours.
+     * A per-server value in a packed file, always written as ${GITSYNC_NAME}. The prefix keeps the
+     * ${placeholder} syntax other plugins use out of our way, and the name cannot hold a colon so
+     * ${placeholder:default} is never mistaken for one of ours either.
      */
-    private static final Pattern VARIABLE = Pattern.compile("\\$\\{([A-Za-z0-9_.-]+)}");
+    private static final Pattern VARIABLE = Pattern.compile("\\$\\{" + VARIABLE_PREFIX + "([A-Za-z0-9_.-]+)}");
 
     private final Path packDir;
     private final Path pluginsDir;
@@ -178,7 +181,10 @@ public class PackRenderer {
             deletes.add(logical);
         }
 
-        if (!conflicts.isEmpty() && !force) {
+        // A value this server never declared would land in the file as a raw ${GITSYNC_NAME}, which
+        // the plugin owning it cannot read. Nothing is written until server.yml declares it, and
+        // force does not help - there is no value to write either way.
+        if (!unresolved.isEmpty() || (!conflicts.isEmpty() && !force)) {
             return new Render(Set.of(), conflicts, unresolved);
         }
 
@@ -413,11 +419,11 @@ public class PackRenderer {
      * @param unresolved collects the names used here that this server does not define, may be null
      */
     private byte[] substitute(byte[] bytes, Set<String> unresolved) {
-        if (this.variables.isEmpty() || RawText.isBinary(bytes)) {
+        if (RawText.isBinary(bytes)) {
             return bytes;
         }
         String text = new String(bytes, StandardCharsets.UTF_8);
-        if (!text.contains("${")) {
+        if (!text.contains("${" + VARIABLE_PREFIX)) {
             return bytes;
         }
         String substituted = substitute(text, unresolved);

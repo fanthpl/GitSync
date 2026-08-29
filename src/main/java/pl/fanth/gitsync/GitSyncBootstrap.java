@@ -7,10 +7,12 @@ import pl.fanth.gitsync.config.ConfigurationFactory;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
+import pl.fanth.gitsync.git.PackRenderer;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
 
@@ -47,12 +49,31 @@ public class GitSyncBootstrap implements PluginBootstrap {
                 return;
             }
             Set<String> changed = service.sync(null, false);
+            if (!service.unresolvedVariables().isEmpty()) {
+                missingVariables(service.unresolvedVariables());
+            }
             if (changed.stream().anyMatch(path -> path.endsWith(".jar"))) {
                 shutdown(changed);
             }
         } finally {
             service.stop();
         }
+    }
+
+    /**
+     * The pack asks for values this server never declared, so the rendered configs hold a raw
+     * ${GITSYNC_NAME} their plugins will not understand. Booting on that quietly breaks whatever
+     * the variable was holding - a database password, a server name - so it stops here instead.
+     */
+    private void missingVariables(Map<String, Set<String>> unresolved) {
+        LOGGER.severe("=".repeat(70));
+        LOGGER.severe("GitSync cannot render the pack, server.yml is missing " + unresolved.size() + " variable(s):");
+        unresolved.forEach((name, files) -> LOGGER.severe("  " + PackRenderer.VARIABLE_PREFIX + name
+                + " - used by " + String.join(", ", files)));
+        LOGGER.severe("Add them under variables: in " + "plugins/GitSync/server.yml"
+                + " (without the " + PackRenderer.VARIABLE_PREFIX + " prefix) and start the server again.");
+        LOGGER.severe("=".repeat(70));
+        System.exit(1);
     }
 
     /**

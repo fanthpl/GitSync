@@ -112,16 +112,16 @@ variables:
 
 ## Variables
 
-A field that differs per server does not need a whole file in `role/` or `instance/` to override it. Write the name in the packed file:
+A field that differs per server does not need a whole file in `role/` or `instance/` to override it. Write the name in the packed file with the `GITSYNC_` prefix - `server.yml` declares it without:
 
 ```yaml
-serverName: ${SERVER_NAME}
-password: ${DB_PASSWORD}
+serverName: ${GITSYNC_SERVER_NAME}
+password: ${GITSYNC_DB_PASSWORD}
 ```
 
-Rendering puts this server's values in, and `/gitsync pushupdate` takes them back out, so the pack keeps the `${NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
+Rendering puts this server's values in, and `/gitsync pushupdate` takes them back out, so the pack keeps the `${GITSYNC_NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
 
-Only names this server declares are touched. A `${...}` the pack uses but `server.yml` does not set is left in the file as it stands, and named in the console at every sync where the set of missing names changes. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
+Only names this server declares are touched. A `${GITSYNC_...}` the pack uses but `server.yml` does not set is left in the file as it stands: the startup sync stops the server and names the missing variables, a sync at runtime is abandoned before anything is written. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
 
 Editing the variable's own line by hand is the one thing that cannot be undone - the value and the edit are indistinguishable. That stops the commit, names the lines, and offers a `[publish anyway]` button (`--confirm` at the end of the message from the console), because publishing sends this server's value to everyone.
 

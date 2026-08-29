@@ -69,6 +69,8 @@ public class GitSyncService {
     private Git git;
     private BukkitTask task;
     private volatile boolean lastSyncFailed;
+    // What the last render could not fill in, so the bootstrap can refuse to boot on it
+    private volatile Map<String, Set<String>> unresolvedVariables = Map.of();
 
     /** Bootstrap phase, no server available. */
     public GitSyncService(Path dataDirectory, Logger logger, Supplier<PluginConfiguration> configSupplier,
@@ -163,6 +165,11 @@ public class GitSyncService {
         return this.lastSyncFailed;
     }
 
+    /** Variable names the last render found in the pack that server.yml does not set, to the files using them. */
+    public Map<String, Set<String>> unresolvedVariables() {
+        return this.unresolvedVariables;
+    }
+
     /** Paths pulled since this boot that a reload command cannot apply, mapped to the reason. */
     public synchronized Map<String, String> restartReasons() {
         return new LinkedHashMap<>(this.restartReasons);
@@ -245,7 +252,14 @@ public class GitSyncService {
             PackRenderer renderer = renderer();
             PackRenderer.State state = PackRenderer.State.load(this.stateFile);
             PackRenderer.Render render = renderer.apply(renderer.plan(manifest), state, force);
+            this.unresolvedVariables = render.unresolved();
             reportUnresolvedVariables(render.unresolved());
+            if (!render.unresolved().isEmpty()) {
+                // Nothing was written, the pack asks for values this server does not have
+                this.lastSyncFailed = true;
+                reportMissingVariables(feedback, render.unresolved());
+                return Set.of();
+            }
 
             if (!render.conflicts().isEmpty()) {
                 // Under force the render already ran, the conflicts only say what was overwritten
@@ -630,7 +644,7 @@ public class GitSyncService {
     }
 
     /**
-     * A packed file asks for a value this server never declared. The rendered file keeps the ${NAME}
+     * A packed file asks for a value this server never declared. The rendered file keeps the ${GITSYNC_NAME}
      * as it stands, which the plugin owning it will almost certainly not understand, so say it out
      * loud - most often the server was set up without a variable its role expects.
      */
@@ -640,8 +654,18 @@ public class GitSyncService {
         }
         this.reportedMissingVariables = new LinkedHashSet<>(unresolved.keySet());
 
-        unresolved.forEach((name, files) -> this.logger.warning("Variable ${" + name + "} is used by "
+        unresolved.forEach((name, files) -> this.logger.warning(
+                "Variable ${" + PackRenderer.VARIABLE_PREFIX + name + "} is used by "
                 + String.join(", ", files) + " but server.yml does not set it."));
+    }
+
+    /** The sync stopped before writing anything, because the pack needs values server.yml does not set. */
+    private void reportMissingVariables(CommandSender sender, Map<String, Set<String>> unresolved) {
+        reply(sender, "Nothing was synced. server.yml is missing " + unresolved.size() + " variable(s):", NamedTextColor.RED);
+        unresolved.forEach((name, files) -> reply(sender, "  " + PackRenderer.VARIABLE_PREFIX + name
+                + " - used by " + String.join(", ", files), NamedTextColor.DARK_RED));
+        reply(sender, "Add them under variables: in server.yml (without the "
+                + PackRenderer.VARIABLE_PREFIX + " prefix) and sync again.", NamedTextColor.YELLOW);
     }
 
     /**
@@ -658,7 +682,7 @@ public class GitSyncService {
         for (String warning : warnings) {
             reply(sender, "  " + warning, NamedTextColor.DARK_RED);
         }
-        reply(sender, "Put the ${VARIABLE} back in the file to keep it shared, or publish anyway.", NamedTextColor.YELLOW);
+        reply(sender, "Put the ${GITSYNC_VARIABLE} back in the file to keep it shared, or publish anyway.", NamedTextColor.YELLOW);
     }
 
     /** The pack wants to change files that were edited on this server, so nothing was written. */
