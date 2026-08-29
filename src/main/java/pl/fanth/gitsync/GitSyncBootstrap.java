@@ -4,6 +4,7 @@ import io.papermc.paper.plugin.bootstrap.BootstrapContext;
 import io.papermc.paper.plugin.bootstrap.PluginBootstrap;
 import org.jetbrains.annotations.NotNull;
 import pl.fanth.gitsync.config.ConfigurationFactory;
+import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.config.ServerConfiguration;
 import pl.fanth.gitsync.git.GitSyncService;
@@ -43,12 +44,24 @@ public class GitSyncBootstrap implements PluginBootstrap {
         ServerConfiguration server = ConfigurationFactory.createConfiguration(
                 ServerConfiguration.class, new File(dataDirectory.toFile(), "server.yml"), LOGGER);
 
+        DataConfiguration data = ConfigurationFactory.createConfiguration(
+                DataConfiguration.class, new File(dataDirectory.toFile(), "data.yml"), LOGGER);
+
+        // Spent whether the sync below succeeds or not, so a broken remote cannot leave the
+        // server forcing on every boot from here on
+        boolean force = data.forceNextStartupSync;
+        if (force) {
+            LOGGER.warning("data.yml asked for one forced startup sync, the edits made on this server are dropped.");
+            data.forceNextStartupSync = false;
+            data.save();
+        }
+
         GitSyncService service = new GitSyncService(dataDirectory, LOGGER, () -> config, () -> server);
         try {
             if (!service.open()) {
                 return;
             }
-            Set<String> changed = service.sync(null, false);
+            Set<String> changed = service.sync(null, force);
             if (!service.unresolvedVariables().isEmpty()) {
                 missingVariables(service.unresolvedVariables());
             }

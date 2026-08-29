@@ -574,9 +574,9 @@ public class PushUpdatePrompt {
                     List.copyOf(draft.configPaths), List.copyOf(draft.reloadCommands)));
                 continue;
             }
-            String wildcard = PackRenderer.deriveWildcard(draft.jar);
-            if (!data.ignoredPluginWildcards.contains(wildcard)) {
-                data.ignoredPluginWildcards.add(wildcard);
+            // The wildcard as it stands on the screen, not the one derived from the jar name
+            if (!data.ignoredPluginWildcards.contains(draft.wildcard)) {
+                data.ignoredPluginWildcards.add(draft.wildcard);
                 ignoredAny = true;
             }
         }
@@ -712,9 +712,8 @@ public class PushUpdatePrompt {
     }
 
     private Component ignoreButton(PluginDraft draft, int printed) {
-        String wildcard = PackRenderer.deriveWildcard(draft.jar);
         return button("[keep private]", NamedTextColor.DARK_GRAY,
-            "Never ask about " + wildcard + " on this server again")
+            "Never ask about " + draft.wildcard + " on this server again")
             .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                 draft.ignored = true;
                 draft.submitted = false;
