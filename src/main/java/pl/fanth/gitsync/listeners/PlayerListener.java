@@ -24,7 +24,7 @@ public class PlayerListener implements Listener {
             if (!player.isOnline() || !GitSyncPlugin.instance().gitSyncService().lastSyncFailed()) {
                 return;
             }
-            player.sendMessage(Component.text("[GitSync] The last sync failed, see the server console for more information.")
+            player.sendMessage(Component.text("[GitSync] The last sync failed. Try syncing manually using '/gitsync sync'.")
                 .color(NamedTextColor.RED));
             player.playSound(player, Sound.BLOCK_NOTE_BLOCK_PLING, 1.0F, 0.5F);
         }, 60L);
