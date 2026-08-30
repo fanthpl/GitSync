@@ -241,6 +241,7 @@ public class GitSyncCommand extends BaseCommand {
 
             int budget = DIFF_LINE_LIMIT;
             int truncated = 0;
+            int shown = 0;
             for (PackRenderer.LocalChange change : changes) {
                 byte[] packed = renderer.renderedBytes(plan, change.logicalPath());
                 Path file = renderer.pluginsFile(change.logicalPath());
@@ -249,13 +250,21 @@ public class GitSyncCommand extends BaseCommand {
                     packed = new byte[0];
                 }
 
-                send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
                 if (RawText.isBinary(packed) || RawText.isBinary(local)) {
+                    shown++;
+                    send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
                     send(sender, "  (binary)", NamedTextColor.GRAY);
                     continue;
                 }
 
-                for (String line : hunksOf(packed, local)) {
+                List<String> hunks = hunksOf(packed, local);
+                if (hunks.isEmpty()) {
+                    continue;
+                }
+
+                shown++;
+                send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
+                for (String line : hunks) {
                     if (budget-- <= 0) {
                         truncated++;
                         continue;
@@ -267,6 +276,9 @@ public class GitSyncCommand extends BaseCommand {
             if (truncated > 0) {
                 send(sender, "... " + truncated + " more line(s), narrow it down with /gitsync git diff <path>", NamedTextColor.GRAY);
             }
+            if (shown == 0) {
+                send(sender, "Nothing reads differently from the pack.", NamedTextColor.GREEN);
+            }
         });
     }
 
@@ -276,6 +288,10 @@ public class GitSyncCommand extends BaseCommand {
         RawText newText = new RawText(local);
         // Kills the line ending churn: a file that only swapped CRLF for LF produces no hunk
         EditList edits = new HistogramDiff().diff(RawTextComparator.WS_IGNORE_TRAILING, oldText, newText);
+        // Formatting none of them writes nothing at all, which splits into one blank line
+        if (edits.isEmpty()) {
+            return List.of();
+        }
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream(); DiffFormatter formatter = new DiffFormatter(out)) {
             formatter.setContext(2);

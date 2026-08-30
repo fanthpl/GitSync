@@ -187,6 +187,24 @@ class PackRendererTest {
         assertEquals("role/city", changes.get("ItemsAdder_4.0.17.jar").targetLayer(), "new files go to the role layer");
     }
 
+    /** A plugin rewriting its own config on shutdown is not an edit anybody wants to publish. */
+    @Test
+    void aFileThatOnlyDriftedInLineEndingsIsNoChangeAtAll() throws Exception {
+        PackRenderer renderer = renderer("city", "");
+        packed("base/Essentials/config.yml", "one: 1\ntwo: 2\n");
+
+        PackRenderer.State state = new PackRenderer.State();
+        renderer.apply(renderer.plan(PACK), state, false);
+
+        local("Essentials/config.yml", "one: 1  \r\ntwo: 2\r\n");
+        assertEquals(List.of(), renderer.localChanges(PACK, state));
+        // And a render is not blocked by it either, or there would be no way to clear it
+        assertEquals(List.of(), renderer.apply(renderer.plan(PACK), state, false).conflicts());
+
+        local("Essentials/config.yml", "one: 1\r\ntwo: 3\r\n");
+        assertEquals(PackRenderer.Kind.MODIFIED, renderer.localChanges(PACK, state).get(0).kind());
+    }
+
     @Test
     void onlyJarsNobodyClaimsAreOffered() throws Exception {
         PackRenderer renderer = renderer("", "");

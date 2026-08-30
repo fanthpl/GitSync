@@ -2,7 +2,9 @@ package pl.fanth.gitsync.git;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import org.eclipse.jgit.diff.HistogramDiff;
 import org.eclipse.jgit.diff.RawText;
+import org.eclipse.jgit.diff.RawTextComparator;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -158,7 +160,9 @@ public class PackRenderer {
                 adopted.put(logical, new State.Entry(planned.getValue(), desiredHash));
                 continue;
             }
-            if (!Objects.equals(diskHash, hashIn(state, logical))) {
+            // A file that only drifted in its line endings is nothing a push would publish either,
+            // so calling it a conflict would leave a render blocked with no way to unblock it
+            if (!Objects.equals(diskHash, hashIn(state, logical)) && !readsTheSame(desired, target(logical))) {
                 conflicts.add(logical);
             }
             writes.put(logical, desired);
@@ -212,6 +216,8 @@ public class PackRenderer {
         Set<String> candidates = new LinkedHashSet<>(state.files.keySet());
         candidates.addAll(declaredOnDisk(manifest));
 
+        // Only worked out once a file needs it - most runs find nothing modified at all
+        Map<String, String> plan = null;
         List<LocalChange> changes = new ArrayList<>();
         for (String logical : candidates) {
             String diskHash = hashOf(target(logical));
@@ -224,10 +230,35 @@ public class PackRenderer {
             } else if (diskHash == null) {
                 changes.add(new LocalChange(logical, Kind.DELETED, tracked.layer));
             } else if (!diskHash.equals(tracked.hash)) {
+                if (plan == null) {
+                    plan = plan(manifest);
+                }
+                if (readsTheSame(renderedBytes(plan, logical), target(logical))) {
+                    continue;
+                }
                 changes.add(new LocalChange(logical, Kind.MODIFIED, tracked.layer));
             }
         }
         return changes;
+    }
+
+    /**
+     * The very same values, written out with different line endings or trailing spaces - which is
+     * what a plugin rewriting its own config on shutdown leaves behind. The hashes disagree and
+     * there is nothing in it to read, so it is neither an edit worth publishing nor a conflict
+     * worth stopping a render for.
+     */
+    private boolean readsTheSame(byte[] packed, Path file) throws IOException {
+        if (packed == null || !Files.isRegularFile(file)) {
+            return false;
+        }
+        byte[] local = Files.readAllBytes(file);
+        if (RawText.isBinary(packed) || RawText.isBinary(local)) {
+            return false;
+        }
+        return new HistogramDiff()
+                .diff(RawTextComparator.WS_IGNORE_TRAILING, new RawText(packed), new RawText(local))
+                .isEmpty();
     }
 
     /** Jars sitting in plugins/ that no pack entry claims - candidates for joining the pack. */
