@@ -269,6 +269,42 @@ class PackRendererTest {
         assertEquals("url: jdbc:mysql://${GITSYNC_HOST}:${GITSYNC_PORT}/mc\n", packedContent("base/Essentials/config.yml"));
     }
 
+    /** A value YAML cannot carry as a plain scalar is quoted on the way in, and put back on the way out. */
+    @Test
+    void aValueBreakingYamlIsQuotedAutomatically() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of(
+                "MOTD", "hello: world #wave",
+                "PREFIX", "&7[lobby]",
+                "PORT", "3306",
+                "TOKEN", "'tis a token"));
+        packed("base/Essentials/config.yml", """
+                motd: ${GITSYNC_MOTD}
+                port: ${GITSYNC_PORT}
+                token: ${GITSYNC_TOKEN}
+                quoted: "${GITSYNC_MOTD}"
+                inside: pre-${GITSYNC_MOTD}
+                list:
+                  - ${GITSYNC_PREFIX}
+                """);
+
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        assertEquals("""
+                motd: 'hello: world #wave'
+                port: 3306
+                token: '''tis a token'
+                quoted: "hello: world #wave"
+                inside: pre-hello: world #wave
+                list:
+                  - '&7[lobby]'
+                """, localContent("Essentials/config.yml"),
+                "only a whole, unquoted value is wrapped; a number stays a number");
+
+        // The quoted form is what reverse knows, so publishing puts the placeholder back
+        renderer.stage("Essentials/config.yml", "base", renderer.reverse("Essentials/config.yml", "base"));
+        assertTrue(packedContent("base/Essentials/config.yml").startsWith("motd: ${GITSYNC_MOTD}\n"));
+    }
+
     /** The Windows servers sharing the pack hand back CRLF, git stores LF either way. */
     @Test
     void aConfigSavedWithCrlfStillPutsTheVariableBack() throws Exception {

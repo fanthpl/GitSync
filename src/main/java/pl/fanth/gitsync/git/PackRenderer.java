@@ -143,8 +143,9 @@ public class PackRenderer {
         for (Map.Entry<String, String> planned : plan.entrySet()) {
             String logical = planned.getKey();
             Set<String> missing = new LinkedHashSet<>();
-            byte[] desired = substitute(
-                    Files.readAllBytes(this.packDir.resolve(planned.getValue()).resolve(logical)), missing);
+            byte[] desired = replaceVariables(
+                    Files.readAllBytes(this.packDir.resolve(planned.getValue()).resolve(logical)),
+                    missing, isYaml(logical));
             for (String name : missing) {
                 unresolved.computeIfAbsent(name, key -> new LinkedHashSet<>()).add(logical);
             }
@@ -254,7 +255,8 @@ public class PackRenderer {
     public byte[] renderedBytes(Map<String, String> plan, String logical) throws IOException {
         String layer = plan.get(logical);
         return layer == null ? null
-                : substitute(Files.readAllBytes(this.packDir.resolve(layer).resolve(logical)), null);
+                : replaceVariables(Files.readAllBytes(this.packDir.resolve(layer).resolve(logical)), null,
+                        isYaml(logical));
     }
 
     /**
@@ -278,9 +280,10 @@ public class PackRenderer {
             return Reversal.NONE;
         }
 
+        boolean yaml = isYaml(logical);
         Map<String, String> templates = new LinkedHashMap<>();
         for (String line : lines(template)) {
-            String rendered = substitute(line, null);
+            String rendered = replaceVariables(line, null, yaml);
             // Two template lines rendering the same way render the same way on every server, so
             // either of them puts the file back together correctly
             if (!rendered.equals(line)) {
@@ -418,7 +421,7 @@ public class PackRenderer {
      *
      * @param unresolved collects the names used here that this server does not define, may be null
      */
-    private byte[] substitute(byte[] bytes, Set<String> unresolved) {
+    private byte[] replaceVariables(byte[] bytes, Set<String> unresolved, boolean yaml) {
         if (RawText.isBinary(bytes)) {
             return bytes;
         }
@@ -426,11 +429,11 @@ public class PackRenderer {
         if (!text.contains("${" + VARIABLE_PREFIX)) {
             return bytes;
         }
-        String substituted = substitute(text, unresolved);
-        return substituted.equals(text) ? bytes : substituted.getBytes(StandardCharsets.UTF_8);
+        String replaced = replaceVariables(text, unresolved, yaml);
+        return replaced.equals(text) ? bytes : replaced.getBytes(StandardCharsets.UTF_8);
     }
 
-    private String substitute(String text, Set<String> unresolved) {
+    private String replaceVariables(String text, Set<String> unresolved, boolean yaml) {
         Matcher matcher = VARIABLE.matcher(text);
         StringBuilder out = new StringBuilder();
         while (matcher.find()) {
@@ -441,10 +444,55 @@ public class PackRenderer {
                 }
                 // Left as it stands, and never rescanned, so a value holding ${...} stays literal
                 value = matcher.group();
+            } else if (yaml && needsYamlQuoting(value) && isWholeYamlValue(text, matcher.start(), matcher.end())) {
+                value = "'" + value.replace("'", "''") + "'";
             }
             matcher.appendReplacement(out, Matcher.quoteReplacement(value));
         }
         return matcher.appendTail(out).toString();
+    }
+
+    private static boolean isYaml(String logical) {
+        return logical.endsWith(".yml") || logical.endsWith(".yaml");
+    }
+
+    /**
+     * True when the value written as a plain YAML scalar would break or read differently, so it has
+     * to be single-quoted. A value that plain style carries verbatim - numbers included - is left
+     * alone, so quoting never changes the type the plugin reads.
+     */
+    private static boolean needsYamlQuoting(String value) {
+        if (value.isEmpty()) {
+            return true;
+        }
+        char first = value.charAt(0);
+        if ("!&*%@`\"'#[]{},|>".indexOf(first) >= 0
+                || Character.isWhitespace(first)
+                || Character.isWhitespace(value.charAt(value.length() - 1))) {
+            return true;
+        }
+        // '-', '?' and ':' only break plain style when a space (or the end) follows them
+        if ((first == '-' || first == '?' || first == ':') && (value.length() == 1 || value.charAt(1) == ' ')) {
+            return true;
+        }
+        return value.contains(" #") || value.contains(": ") || value.endsWith(":");
+    }
+
+    /**
+     * The placeholder alone forms the value, as in "key: ${GITSYNC_X}" or "- ${GITSYNC_X}", with
+     * nothing else on the line. Quotes are only safe around a whole value: a placeholder inside a
+     * larger string, one already quoted by the template, or one followed by a comment is left as
+     * the template wrote it.
+     */
+    private static boolean isWholeYamlValue(String text, int start, int end) {
+        int lineStart = text.lastIndexOf('\n', start - 1) + 1;
+        int lineEnd = text.indexOf('\n', end);
+        if (!text.substring(end, lineEnd < 0 ? text.length() : lineEnd).isBlank()) {
+            return false;
+        }
+        String head = text.substring(lineStart, start);
+        String stripped = head.stripTrailing();
+        return stripped.length() < head.length() && (stripped.endsWith(":") || stripped.endsWith("-"));
     }
 
     /**
