@@ -44,6 +44,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 @CommandAlias("gitsync")
@@ -432,7 +433,7 @@ public class GitSyncCommand extends BaseCommand {
             List<String> jars = service.unknownJars();
 
             if (changes.isEmpty() && jars.isEmpty()) {
-                doPublish(sender, message, confirmed, List.of(), Map.of());
+                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of());
                 return;
             }
 
@@ -445,7 +446,7 @@ public class GitSyncCommand extends BaseCommand {
                     send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
                     return;
                 }
-                doPublish(sender, message, confirmed, List.of(), Map.of());
+                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of());
                 return;
             }
             new PushUpdatePrompt(player, changes, jars, message, confirmed).start();
@@ -453,13 +454,14 @@ public class GitSyncCommand extends BaseCommand {
     }
 
     private void doPublish(CommandSender sender, String message, boolean confirmed,
-                           List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers) {
+                           List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers,
+                           Set<String> skipped) {
         send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            if (!service.commitAndPush(sender, message, confirmed, newPlugins, fileLayers).isEmpty()) {
-                offerToPublishAnyway(sender, message, newPlugins, fileLayers);
+            if (!service.commitAndPush(sender, message, confirmed, newPlugins, fileLayers, skipped).isEmpty()) {
+                offerToPublishAnyway(sender, message, newPlugins, fileLayers, skipped);
             }
         });
     }
@@ -472,7 +474,8 @@ public class GitSyncCommand extends BaseCommand {
 
     /** The service already named the lines it could not put back, this is the way past it. */
     private void offerToPublishAnyway(CommandSender sender, String message,
-                                      List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers) {
+                                      List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers,
+                                      Set<String> skipped) {
         if (!(sender instanceof Player)) {
             send(sender, "Add " + CONFIRM_FLAG.trim() + " to the end of the message to publish them anyway.", NamedTextColor.YELLOW);
             return;
@@ -481,7 +484,7 @@ public class GitSyncCommand extends BaseCommand {
         // Carries the answers along, so saying yes here does not ask about every jar again
         sender.sendMessage(Component.text("[publish anyway]").color(NamedTextColor.RED)
                 .hoverEvent(HoverEvent.showText(Component.text("Send this server's own values to every server rendering these files")))
-                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins, fileLayers))));
+                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins, fileLayers, skipped))));
     }
 
     /** Run a git action off the main thread on the shared repository handle. */

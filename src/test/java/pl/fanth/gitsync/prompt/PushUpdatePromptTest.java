@@ -21,10 +21,10 @@ class PushUpdatePromptTest {
                 {"jar":"Thing-1.0.jar","name":"Thing","configPaths":["Thing"],"reloadCommands":["thing reload"],"wildcard":"Thing-*.jar","submitted":true,"ignored":false}
               ],
               "pluginGroups": [
-                {"owner":"Thing","drafts":[{"path":"Thing-1.0.jar","layer":"base"},{"path":"Thing/config.yml","layer":"server/lobby"}]}
+                {"owner":"Thing","drafts":[{"path":"Thing-1.0.jar","layer":"base","skipped":false},{"path":"Thing/config.yml","layer":"server/lobby","skipped":false}]}
               ],
               "fileGroups": [
-                {"owner":"Other files","drafts":[{"path":"other.yml","layer":"role/lobby"}]}
+                {"owner":"Other files","drafts":[{"path":"other.yml","skipped":true}]}
               ],
               "tracked": [
                 {"logicalPath":"Thing/messages.yml","kind":"MODIFIED","targetLayer":"base"}

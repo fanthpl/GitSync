@@ -367,11 +367,13 @@ public class GitSyncService {
      * @param confirmed publish even the variable lines that cannot be put back
      * @param newPlugins jars this server holds that the admin decided to put into the pack
      * @param fileLayers where a file the pack has never seen goes, keyed by logical path
+     * @param skipped logical paths left out of this push only, nothing about them is written down
      * @return the variable lines that stopped the commit, empty when it went through
      */
     public synchronized List<String> commitAndPush(CommandSender sender, String message, boolean confirmed,
                                                    List<NewPlugin> newPlugins,
-                                                   Map<String, String> fileLayers) throws Exception {
+                                                   Map<String, String> fileLayers,
+                                                   Set<String> skipped) throws Exception {
         PackRenderer renderer = renderer();
         PackRenderer.State state = PackRenderer.State.load(this.stateFile);
 
@@ -390,6 +392,8 @@ public class GitSyncService {
         }
 
         List<PackRenderer.LocalChange> changes = new ArrayList<>(renderer.localChanges(manifest, state));
+        // Nothing is staged and nothing goes into the state for these, so they turn up as new again
+        changes.removeIf(change -> skipped.contains(change.logicalPath()));
         changes.replaceAll(change -> retarget(change, manifest, addedLayers, fileLayers));
 
         // Worked out before anything is written, so a refusal leaves the pack untouched

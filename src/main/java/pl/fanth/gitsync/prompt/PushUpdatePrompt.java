@@ -23,8 +23,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -142,7 +144,8 @@ public class PushUpdatePrompt {
     /** Where the answers go once they are confirmed, which a restart cannot bring back by itself. */
     public interface Publisher {
         void publish(CommandSender sender, String message, boolean confirmed,
-                     List<GitSyncService.NewPlugin> plugins, Map<String, String> fileLayers);
+                     List<GitSyncService.NewPlugin> plugins, Map<String, String> fileLayers,
+                     Set<String> skipped);
     }
 
     public static void publisher(Publisher publisher) {
@@ -403,30 +406,36 @@ public class PushUpdatePrompt {
     private void renderFileGroup(int printed, int group) {
         List<FileGroup> groups = groups();
         FileGroup files = groups.get(group);
-        long placed = files.drafts.stream().filter(FileDraft::answered).count();
+        long placed = files.drafts.stream().filter(draft -> draft.layer != null).count();
+        long skipped = files.drafts.stream().filter(draft -> draft.skipped).count();
         // A plugin like ItemsAdder brings thousands of files, and a row each would push the top
         // row - the one that settles all of them at once - clean out of the chat
         int pages = (files.drafts.size() + FILES_PER_PAGE - 1) / FILES_PER_PAGE;
         this.page = Math.max(0, Math.min(this.page, pages - 1));
 
         header(printed, files.owner + " files (" + (group + 1) + " of " + groups.size() + ")");
-        say("Pick where they go - " + placed + " of " + files.drafts.size() + " placed.",
-            NamedTextColor.GRAY);
+        say("Pick where they go - " + placed + " of " + files.drafts.size() + " placed"
+            + (skipped == 0 ? "" : ", " + skipped + " skipped") + ".", NamedTextColor.GRAY);
 
         this.viewer.sendMessage(Component.text("All of them: ").color(NamedTextColor.AQUA)
             .append(layerRow(printed, files.commonLayer(),
                 "Publish every file of " + files.owner + " in ",
-                layer -> files.drafts.forEach(draft -> draft.layer = layer))));
+                layer -> files.drafts.forEach(draft -> draft.place(layer))))
+            .append(skipButton(printed, files.drafts.stream().allMatch(draft -> draft.skipped),
+                "Leave every file of " + files.owner + " out of this push",
+                () -> files.drafts.forEach(FileDraft::skip))));
 
         int from = this.page * FILES_PER_PAGE;
         int to = Math.min(from + FILES_PER_PAGE, files.drafts.size());
         for (FileDraft draft : files.drafts.subList(from, to)) {
             this.viewer.sendMessage(Component.empty()
                 .append(Component.text("  " + draft.path).color(NamedTextColor.WHITE))
-                .append(Component.text(draft.answered() ? " -> " + draft.layer : " -> ?").color(NamedTextColor.GRAY)));
+                .append(Component.text(" -> " + placementOf(draft)).color(NamedTextColor.GRAY)));
             this.viewer.sendMessage(Component.text("    ")
                 .append(layerRow(printed, draft.layer, "Publish " + draft.path + " in ",
-                    layer -> draft.layer = layer)));
+                    draft::place))
+                .append(skipButton(printed, draft.skipped,
+                    "Leave " + draft.path + " out of this push", () -> skip(files, draft))));
         }
         if (pages > 1) {
             this.viewer.sendMessage(Component.empty()
@@ -452,6 +461,36 @@ public class PushUpdatePrompt {
                     advance();
                 }))))
             .append(Component.space()).append(cancelButton(printed)));
+    }
+
+    /**
+     * Out of this push and out of nothing else: no skip is ever written down, so the file is asked
+     * about again the next time. A jar is the whole plugin joining the pack, so skipping it takes
+     * everything the plugin would have brought with it - the entry is not written either.
+     */
+    private void skip(FileGroup files, FileDraft draft) {
+        if (this.pluginGroups.contains(files) && files.drafts.get(0) == draft) {
+            files.drafts.forEach(FileDraft::skip);
+            return;
+        }
+        draft.skip();
+    }
+
+    private Component skipButton(int printed, boolean picked, String hover, Runnable skip) {
+        Component button = button("[skip]", NamedTextColor.DARK_GRAY,
+            hover + " - nothing is remembered, the next pushupdate asks again")
+            .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
+                skip.run();
+                render();
+            })));
+        return picked ? button.decorate(TextDecoration.BOLD) : button;
+    }
+
+    private String placementOf(FileDraft draft) {
+        if (draft.skipped) {
+            return "skipped";
+        }
+        return draft.layer == null ? "?" : draft.layer;
     }
 
     private int firstUnplaced(FileGroup files) {
@@ -495,7 +534,7 @@ public class PushUpdatePrompt {
             for (PluginDraft draft : this.plugins) {
                 this.viewer.sendMessage(Component.text("  " + draft.name + " ").color(NamedTextColor.WHITE)
                     .append(Component.text("-> " + placementOf(draft)).color(NamedTextColor.GRAY)));
-                if (!draft.ignored) {
+                if (!draft.ignored && !skipped(draft)) {
                     say("    configs: " + summarize(draft.configPaths), NamedTextColor.DARK_GRAY);
                     say("    reloads: " + summarize(draft.reloadCommands), NamedTextColor.DARK_GRAY);
                 }
@@ -514,7 +553,7 @@ public class PushUpdatePrompt {
             for (FileGroup group : groups) {
                 for (FileDraft draft : group.drafts) {
                     if (left-- > 0) {
-                        fileLine(PackRenderer.Kind.NEW, draft.path, draft.layer);
+                        fileLine(PackRenderer.Kind.NEW, draft.path, placementOf(draft));
                     }
                 }
             }
@@ -567,6 +606,10 @@ public class PushUpdatePrompt {
         List<GitSyncService.NewPlugin> answers = new ArrayList<>();
         boolean ignoredAny = false;
         for (PluginDraft draft : this.plugins) {
+            // Skipped jars leave no trace at all, so the next pushupdate asks about them again
+            if (skipped(draft)) {
+                continue;
+            }
             if (!draft.ignored) {
                 // The jar leads its own group, so its layer is the one anything else the plugin
                 // drags in falls back to
@@ -585,10 +628,17 @@ public class PushUpdatePrompt {
         }
 
         Map<String, String> fileLayers = new LinkedHashMap<>();
+        Set<String> skippedFiles = new LinkedHashSet<>();
         for (FileGroup group : groups()) {
-            group.drafts.forEach(draft -> fileLayers.put(draft.path, draft.layer));
+            for (FileDraft draft : group.drafts) {
+                if (draft.skipped) {
+                    skippedFiles.add(draft.path);
+                } else {
+                    fileLayers.put(draft.path, draft.layer);
+                }
+            }
         }
-        publisher.publish(this.viewer, this.message, this.confirmed, answers, fileLayers);
+        publisher.publish(this.viewer, this.message, this.confirmed, answers, fileLayers, skippedFiles);
     }
 
     private void header(int printed, String title) {
@@ -778,7 +828,17 @@ public class PushUpdatePrompt {
     }
 
     private String placementOf(PluginDraft draft) {
-        return draft.ignored ? "kept private" : layerOf(draft);
+        if (draft.ignored) {
+            return "kept private";
+        }
+        return skipped(draft) ? "skipped, asked about again next push" : layerOf(draft);
+    }
+
+    /** A submitted jar left out of this push - its own file screen leads with the jar itself. */
+    private boolean skipped(PluginDraft plugin) {
+        return this.pluginGroups.stream()
+            .filter(group -> group.owner.equals(plugin.name))
+            .anyMatch(group -> group.drafts.get(0).skipped);
     }
 
     /** Where the jar itself was placed, which is the first row of the plugin's own file screen. */
@@ -892,13 +952,25 @@ public class PushUpdatePrompt {
     private static final class FileDraft {
         private final String path;
         private String layer;
+        /** Left out of this push and nothing else - the next pushupdate asks about it again. */
+        private boolean skipped;
 
         private FileDraft(String path) {
             this.path = path;
         }
 
+        private void skip() {
+            this.skipped = true;
+            this.layer = null;
+        }
+
+        private void place(String layer) {
+            this.skipped = false;
+            this.layer = layer;
+        }
+
         private boolean answered() {
-            return this.layer != null;
+            return this.layer != null || this.skipped;
         }
     }
 }
