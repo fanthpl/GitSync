@@ -41,11 +41,12 @@ public class PackRenderer {
     /** The prefix every one of our variables carries in a packed file. */
     public static final String VARIABLE_PREFIX = "GITSYNC_";
     /**
-     * A per-server value in a packed file, always written as ${GITSYNC_NAME}. The prefix keeps the
-     * ${placeholder} syntax other plugins use out of our way, and the name cannot hold a colon so
-     * ${placeholder:default} is never mistaken for one of ours either.
+     * A per-server value in a packed file, written as ${GITSYNC_NAME} or with a fallback as
+     * ${GITSYNC_NAME:default}. The prefix keeps the ${placeholder} syntax other plugins use out of
+     * our way; without it a colon form is never mistaken for one of ours either.
      */
-    private static final Pattern VARIABLE = Pattern.compile("\\$\\{" + VARIABLE_PREFIX + "([A-Za-z0-9_.-]+)}");
+    private static final Pattern VARIABLE =
+            Pattern.compile("\\$\\{" + VARIABLE_PREFIX + "([A-Za-z0-9_.-]+)(?::([^}]*))?}");
 
     private final Path packDir;
     private final Path pluginsDir;
@@ -301,8 +302,9 @@ public class PackRenderer {
      */
     public Reversal reverse(String logical, String layer) throws IOException {
         Path templateFile = this.packDir.resolve(layer).resolve(logical);
-        // Nothing to put back for a file the pack has never seen, or on a server without variables
-        if (this.variables.isEmpty() || !Files.isRegularFile(templateFile)) {
+        // Nothing to put back for a file the pack has never seen. A server without declared
+        // variables still renders ${GITSYNC_NAME:default} placeholders, so it walks the template too.
+        if (!Files.isRegularFile(templateFile)) {
             return Reversal.NONE;
         }
 
@@ -447,8 +449,9 @@ public class PackRenderer {
 
     /**
      * The packed bytes as this server should see them, the very same array when no variable of ours
-     * applies. Undefined names are left alone: a config may hold ${...} of its own, and blanking one
-     * out would be worse than leaving it for the plugin to read.
+     * applies. An undefined name falls back to the default the placeholder carries, if any; without
+     * one it is left alone: a config may hold ${...} of its own, and blanking one out would be worse
+     * than leaving it for the plugin to read.
      *
      * @param unresolved collects the names used here that this server does not define, may be null
      */
@@ -469,6 +472,10 @@ public class PackRenderer {
         StringBuilder out = new StringBuilder();
         while (matcher.find()) {
             String value = this.variables.get(matcher.group(1));
+            if (value == null) {
+                // The default written into the placeholder itself, for servers that do not declare it
+                value = matcher.group(2);
+            }
             if (value == null) {
                 if (unresolved != null) {
                     unresolved.add(matcher.group(1));

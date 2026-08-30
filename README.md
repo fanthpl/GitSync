@@ -121,7 +121,9 @@ password: ${GITSYNC_DB_PASSWORD}
 
 Rendering puts this server's values in, and `/gitsync pushupdate` takes them back out, so the pack keeps the `${GITSYNC_NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
 
-Only names this server declares are touched. A `${GITSYNC_...}` the pack uses but `server.yml` does not set is left in the file as it stands: the startup sync stops the server and names the missing variables, a sync at runtime is abandoned before anything is written. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
+A default can ride in the placeholder itself, `${GITSYNC_PORT:25565}` - servers that declare the name use their value, the rest use the default.
+
+Only names this server declares are touched. A `${GITSYNC_...}` the pack uses but `server.yml` does not set, and that carries no default, is left in the file as it stands: the startup sync stops the server and names the missing variables, a sync at runtime is abandoned before anything is written. Anything a server does not declare at all is left alone entirely, so the `${placeholder}` syntax other plugins use is safe.
 
 Editing the variable's own line by hand is the one thing that cannot be undone - the value and the edit are indistinguishable. That stops the commit, names the lines, and offers a `[publish anyway]` button (`--confirm` at the end of the message from the console), because publishing sends this server's value to everyone.
 

@@ -245,6 +245,33 @@ class PackRendererTest {
     }
 
     @Test
+    void aDefaultInThePlaceholderFillsInWhenTheServerDoesNotDeclareIt() throws Exception {
+        PackRenderer renderer = renderer("", "", Map.of("PORT", "25599"));
+        packed("base/Essentials/config.yml", "port: ${GITSYNC_PORT:25565}\nmotd: ${GITSYNC_MOTD:hello}\n");
+
+        PackRenderer.Render render = renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        // The declared value wins over the default; the undeclared one falls back and is not missing
+        assertEquals("port: 25599\nmotd: hello\n", localContent("Essentials/config.yml"));
+        assertTrue(render.unresolved().isEmpty());
+    }
+
+    @Test
+    void publishingPutsThePlaceholderWithItsDefaultBackEvenWithoutDeclaredVariables() throws Exception {
+        PackRenderer renderer = renderer("", "");
+        packed("base/Essentials/config.yml", "motd: ${GITSYNC_MOTD:hello}\nother: keep\n");
+        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
+
+        local("Essentials/config.yml", "motd: hello\nother: changed\n");
+
+        PackRenderer.Reversal reversal = renderer.reverse("Essentials/config.yml", "base");
+        renderer.stage("Essentials/config.yml", "base", reversal);
+
+        assertTrue(reversal.warnings().isEmpty());
+        assertEquals("motd: ${GITSYNC_MOTD:hello}\nother: changed\n", packedContent("base/Essentials/config.yml"));
+    }
+
+    @Test
     void publishingPutsTheVariableBackAndKeepsTheEdit() throws Exception {
         PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));
         packed("base/Essentials/config.yml", "serverName: ${GITSYNC_SERVER_NAME}\nmotd: hello\n");
