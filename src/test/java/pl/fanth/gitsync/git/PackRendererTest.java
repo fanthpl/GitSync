@@ -366,6 +366,27 @@ class PackRendererTest {
         assertEquals("serverName: ${GITSYNC_SERVER_NAME}\nmotd: goodbye\n", packedContent("base/Essentials/config.yml"));
     }
 
+    /** An edit waiting for pushupdate must not turn every sync into "the last sync failed". */
+    @Test
+    void aLocalEditWithNoPackChangeIsNotAConflict() throws Exception {
+        PackRenderer renderer = renderer("", "");
+        packed("base/Essentials/config.yml", "from the pack");
+
+        PackRenderer.State state = new PackRenderer.State();
+        renderer.apply(renderer.plan(PACK), state, false);
+        local("Essentials/config.yml", "edited here");
+
+        PackRenderer.Render render = renderer.apply(renderer.plan(PACK), state, false);
+
+        assertTrue(render.conflicts().isEmpty(), "the pack has nothing new for this file");
+        assertTrue(render.changed().isEmpty());
+        assertEquals("edited here", localContent("Essentials/config.yml"), "the edit stays put");
+
+        // Force still means the pack wins
+        renderer.apply(renderer.plan(PACK), state, true);
+        assertEquals("from the pack", localContent("Essentials/config.yml"));
+    }
+
     @Test
     void aChangedVariableValueIsAnUpdateAndNotAConflict() throws Exception {
         PackRenderer renderer = renderer("", "", Map.of("SERVER_NAME", "lobby-1"));

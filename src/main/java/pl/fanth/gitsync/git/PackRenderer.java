@@ -161,6 +161,12 @@ public class PackRenderer {
                 adopted.put(logical, new State.Entry(planned.getValue(), desiredHash));
                 continue;
             }
+            // The pack still says what the last render wrote, so whatever differs on disk is a
+            // local edit waiting for pushupdate - nothing new to apply and nothing to conflict on.
+            // Under force the pack wins and the edit is overwritten like any other conflict.
+            if (!force && desiredHash.equals(hashIn(state, logical))) {
+                continue;
+            }
             // A file that only drifted in its line endings is nothing a push would publish either,
             // so calling it a conflict would leave a render blocked with no way to unblock it
             if (!Objects.equals(diskHash, hashIn(state, logical)) && !readsTheSame(desired, target(logical))) {
