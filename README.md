@@ -168,7 +168,7 @@ Restart required: YES
   SomePlugin/config.yml (no reload commands declared)
 ```
 
-A restart is flagged when a sync adds, removes or updates a plugin jar, or when it changes a config of a plugin whose entry declares no `reloadCommands`. The flag lives in memory only - the restart it asks for is what clears it.
+A restart is flagged when a sync adds, removes or updates a plugin jar, or when it changes a config of a plugin whose entry declares no `reloadCommands`. A plugin whose jar changed is also not reloaded again until that restart; every other plugin keeps reloading normally. The flag lives in memory only - the restart it asks for is what clears it.
 
 ## Startup behaviour
 

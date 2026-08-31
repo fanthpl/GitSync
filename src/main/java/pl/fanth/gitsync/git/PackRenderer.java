@@ -616,7 +616,6 @@ public class PackRenderer {
      * what tells an update apart from an edit made on this server.
      */
     public static class State {
-        public String packHash;
         public Map<String, Entry> files = new LinkedHashMap<>();
 
         public static class Entry {

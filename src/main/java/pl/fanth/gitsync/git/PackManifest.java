@@ -7,8 +7,10 @@ import java.nio.file.PathMatcher;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -81,11 +83,24 @@ public class PackManifest {
         return null;
     }
 
-    /** Returns the list of plugin entries that are affected by the given changed paths. */
-    public List<Entry> getEntriesFor(Collection<String> changedPaths) {
+    /** Reload commands of every plugin touched by the given changed paths, in pack.json order. */
+    public List<String> reloadCommandsFor(Collection<String> changedPaths) {
+        return reloadCommandsFor(changedPaths, Set.of());
+    }
+
+    /**
+     * Reload commands of every plugin touched by the given changed paths, in pack.json order.
+     *
+     * @param changedPaths    repository-relative paths that changed in this sync
+     * @param excludedPlugins plugins left out even when touched - the ones whose loaded code no
+     *                        longer matches the disk
+     */
+    public List<String> reloadCommandsFor(Collection<String> changedPaths, Collection<String> excludedPlugins) {
         List<Entry> entries = new ArrayList<>();
-        for (Entry entry : this.plugins.values()) {
-            if (entry.configPaths == null || entry.configPaths.isEmpty()) {
+        for (Map.Entry<String, Entry> plugin : this.plugins.entrySet()) {
+            Entry entry = plugin.getValue();
+            if (excludedPlugins.contains(plugin.getKey())
+                    || entry.configPaths == null || entry.configPaths.isEmpty()) {
                 continue;
             }
             for (String path : changedPaths) {
@@ -95,12 +110,18 @@ public class PackManifest {
                 }
             }
         }
-        return entries;
+        return commandsOf(entries);
     }
 
-    /** Reload commands of every plugin touched by the given changed paths, in pack.json order. */
-    public List<String> reloadCommandsFor(Collection<String> changedPaths) {
-        return commandsOf(getEntriesFor(changedPaths));
+    /** Plugins whose jar file is among the changed paths. */
+    public Set<String> pluginsWithChangedJar(Collection<String> changedPaths) {
+        Set<String> names = new LinkedHashSet<>();
+        for (Map.Entry<String, Entry> plugin : this.plugins.entrySet()) {
+            if (changedPaths.stream().anyMatch(plugin.getValue()::matchesJar)) {
+                names.add(plugin.getKey());
+            }
+        }
+        return names;
     }
 
     /**

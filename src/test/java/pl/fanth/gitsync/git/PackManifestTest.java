@@ -78,4 +78,13 @@ class PackManifestTest {
         // A prefix must not match a sibling directory
         assertEquals(List.of(), manifest.reloadCommandsFor(Set.of("ItemsAdder/storage-backup/x.yml")));
     }
+
+    @Test
+    void blockedPluginsSitOutReloadsWhileOthersKeepReloading() {
+        PackManifest manifest = PackManifest.parse(PACK);
+        Set<String> changed = Set.of("ItemsAdder-4.0.jar", "ItemsAdder/config.yml", "EssentialsX/config.yml");
+
+        assertEquals(Set.of("ItemsAdder"), manifest.pluginsWithChangedJar(changed));
+        assertEquals(List.of("ess reload"), manifest.reloadCommandsFor(changed, Set.of("ItemsAdder")));
+    }
 }

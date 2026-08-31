@@ -63,6 +63,10 @@ public class GitSyncService {
     private final AtomicBoolean syncing = new AtomicBoolean();
     // Cleared by the restart itself, so it never needs to be persisted
     private final Map<String, String> restartReasons = new LinkedHashMap<>();
+    // Plugins whose jar on disk stopped matching what this server loaded - a replaced jar, or a
+    // brand new one the server never loaded. Reloading them is guesswork, so they sit out every
+    // reload until the restart that also clears this set. Everything else keeps reloading.
+    private final Set<String> blockedPlugins = new LinkedHashSet<>();
     // The sync runs on a timer, so a missing variable is only worth saying when the set changes
     private Set<String> reportedMissingVariables = Set.of();
 
@@ -219,6 +223,9 @@ public class GitSyncService {
         try {
             configureRepository(config);
 
+            // What the pack held before this pull, so a plugin dropped from it can still be named
+            Set<String> pluginsBefore = Set.copyOf(readManifest().plugins.keySet());
+
             if (force) {
                 if (!resetToRemote(config, feedback)) {
                     return Set.of();
@@ -274,23 +281,28 @@ public class GitSyncService {
             }
 
             Set<String> changed = new LinkedHashSet<>(render.changed());
-            String packHash = packHash();
-            if (state.packHash != null && !state.packHash.equals(packHash)) {
-                // A plugin dropped from the pack is gone from the manifest as well, so nothing
-                // below can match the paths it left behind. Its files disappear from disk while
-                // the server keeps it loaded, and only a restart settles that.
-                changed.add("pack.json");
-                this.restartReasons.put("pack.json", "the pack composition changed");
-            }
-            state.packHash = packHash;
             state.save(this.stateFile);
 
-            this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
+            // A jar written by this render no longer matches the code the server loaded - either a
+            // replaced jar or a brand new plugin the server has never loaded at all
+            Set<String> jarChanged = manifest.pluginsWithChangedJar(changed);
+            this.blockedPlugins.addAll(jarChanged);
+            for (String name : jarChanged) {
+                if (!pluginsBefore.contains(name)) {
+                    this.restartReasons.put(name, "new plugin, loads on the next start");
+                }
+            }
+            // A plugin dropped from the pack loses its manifest entry too, so nothing below can
+            // match the paths it left behind. Its files disappear from disk while the server
+            // keeps it loaded, and only a restart settles that.
+            for (String name : pluginsBefore) {
+                if (!manifest.plugins.containsKey(name)) {
+                    this.restartReasons.put(name, "removed from the pack");
+                }
+            }
 
-            // Once the pack composition changed, the loaded plugins no longer match what is on disk,
-            // so reloading anything is guesswork. Stays off for every later sync too, until a restart.
-            boolean packChanged = this.restartReasons.containsKey("pack.json");
-            List<String> commands = packChanged ? List.of() : manifest.reloadCommandsFor(changed);
+            this.restartReasons.putAll(manifest.restartRequiredPaths(changed));
+            List<String> commands = manifest.reloadCommandsFor(changed, this.blockedPlugins);
 
             if (changed.isEmpty() && !force) {
                 reply(feedback, "Already up to date.", NamedTextColor.YELLOW);
@@ -300,9 +312,11 @@ public class GitSyncService {
             this.logger.info("Synced " + describeHead() + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).");
             reply(feedback, "Synced " + describeHead()
                     + " (" + changed.size() + " file(s) changed, " + commands.size() + " reload command(s)).", NamedTextColor.GREEN);
-            if (packChanged) {
-                this.logger.info("pack.json changed, reload commands are disabled until the server restarts.");
-                reply(feedback, "pack.json changed, no plugin will be reloaded until the server restarts.", NamedTextColor.YELLOW);
+            if (!jarChanged.isEmpty()) {
+                this.logger.info("Plugin jar(s) changed on disk, these plugins will not be reloaded until the "
+                        + "server restarts: " + String.join(", ", jarChanged));
+                reply(feedback, jarChanged.size() + " plugin(s) will not be reloaded until the server restarts: "
+                        + String.join(", ", jarChanged), NamedTextColor.YELLOW);
             }
             if (!this.restartReasons.isEmpty()) {
                 reply(feedback, "A server restart is required, run /gitsync status for the details.", NamedTextColor.YELLOW);
@@ -446,11 +460,6 @@ public class GitSyncService {
                         new PackRenderer.State.Entry(change.targetLayer(), renderer.diskHash(change.logicalPath())));
             }
         }
-        // The jars that just joined are already loaded on this server, so the composition change
-        // they make is not one that asks for a restart
-        if (!newPlugins.isEmpty()) {
-            state.packHash = packHash();
-        }
         state.save(this.stateFile);
         reply(sender, "Successfully pushed! " + changes.size() + " local change(s) are now in the pack.", NamedTextColor.GREEN);
         if (!newPlugins.isEmpty()) {
@@ -478,12 +487,6 @@ public class GitSyncService {
         PackManifest manifest = readManifest();
         manifest.plugins.put(name, entry);
         Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
-
-        // The plugin is already loaded here, so its edited entry asks for no restart of ours -
-        // without this the auto sync would read the new hash as the pack composition changing
-        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
-        state.packHash = packHash();
-        state.save(this.stateFile);
         reply(sender, name + " updated in the local pack.json, nothing was pushed yet.", NamedTextColor.GREEN);
         reply(sender, "Run /gitsync pushupdate to publish it together with the files it claims.", NamedTextColor.YELLOW);
     }
@@ -525,7 +528,6 @@ public class GitSyncService {
         PackRenderer renderer = renderer();
         PackRenderer.State state = PackRenderer.State.load(this.stateFile);
         PackRenderer.Render render = renderer.apply(renderer.plan(readManifest()), state, true);
-        state.packHash = packHash();
         state.save(this.stateFile);
 
         reply(sender, "Restored " + render.changed().size() + " file(s) from the pack.", NamedTextColor.GREEN);
@@ -747,12 +749,6 @@ public class GitSyncService {
             return new PackManifest();
         }
         return PackManifest.parse(Files.readString(file.toPath(), StandardCharsets.UTF_8));
-    }
-
-    /** Null when the repository has no pack.json yet. */
-    private String packHash() throws IOException {
-        Path file = this.packDir.resolve("pack.json");
-        return Files.isRegularFile(file) ? PackRenderer.hash(Files.readAllBytes(file)) : null;
     }
 
     private String describeHead() throws IOException {

@@ -103,7 +103,7 @@ Covered by the wildcard (`ItemsAdder_*.jar`): commit the new jar, delete the old
 
 ### A plugin is removed from `pack.json`
 
-On the next sync its files vanish from disk (they are tracked in the state, no longer in the plan) while the server still has the plugin loaded. That mismatch cannot be reloaded away, so the sync flags `pack.json - the pack composition changed` as a restart reason **and disables all reload commands until the restart** - reloading anything against a plugins directory that no longer matches what is loaded is guesswork.
+On the next sync its files vanish from disk (they are tracked in the state, no longer in the plan) while the server still has the plugin loaded. That mismatch cannot be reloaded away, so the sync flags the removed plugin as a restart reason. Other plugins keep reloading normally - only a plugin whose own jar changed (replaced, or brand new and never loaded) sits out every reload until the restart.
 
 ### `pack.json` is deleted from the repository
 
