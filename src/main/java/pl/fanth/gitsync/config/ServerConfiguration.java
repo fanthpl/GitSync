@@ -24,9 +24,10 @@ public class ServerConfiguration extends OkaeriConfig {
     @Comment("Example:")
     @Comment("  variables:")
     @Comment("    SERVER_NAME: \"lobby-1\"")
-    @Comment("    DB_PASSWORD: \"${DB_PASSWORD}\"")
+    @Comment("    DB_PASSWORD: \"passwd123\"")
     @Comment("Usage in plugins' config.yml:")
     @Comment("  db:")
+    @Comment("    port: \"${GITSYNC_DB_PORT:3306}\" # Use '3306' by default when variable is missing")
     @Comment("    password: \"${GITSYNC_DB_PASSWORD}\"")
     public Map<String, String> variables = new LinkedHashMap<>();
 }
