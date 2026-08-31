@@ -355,7 +355,13 @@ public class GitSyncService {
             // Our own jar is not part of any pack, asking about it on every commit is noise
             ignored.add(this.plugin.getFile().getName());
         }
-        return renderer().unknownJars(readManifest(), ignored);
+        List<String> jars = new ArrayList<>(renderer().unknownJars(readManifest(), ignored));
+        if (this.plugin != null) {
+            // An update of our own jar uploaded while the server runs carries a different file
+            // name than the loaded one, so it is recognized by the plugin name inside it instead
+            jars.removeIf(jar -> this.plugin.getName().equals(pluginName(jar)));
+        }
+        return jars;
     }
 
     /**
