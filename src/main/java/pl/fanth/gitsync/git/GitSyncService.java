@@ -8,6 +8,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jgit.api.CheckoutCommand;
+import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
@@ -222,6 +224,7 @@ public class GitSyncService {
         PluginConfiguration config = this.configSupplier.get();
         try {
             configureRepository(config);
+            checkoutConfiguredBranch(config);
 
             // What the pack held before this pull, so a plugin dropped from it can still be named
             Set<String> pluginsBefore = Set.copyOf(readManifest().plugins.keySet());
@@ -740,6 +743,35 @@ public class GitSyncService {
         // the Windows and Linux servers sharing this repository can never disagree about it.
         stored.setString("core", null, "autocrlf", "input");
         stored.save();
+    }
+
+    /**
+     * The repository keeps whatever branch it was created on, and a pull only merges into it, so
+     * a branch changed in config.yml needs an actual checkout before push and pull follow it.
+     */
+    private void checkoutConfiguredBranch(PluginConfiguration config) throws Exception {
+        Repository repo = this.git.getRepository();
+        if (config.branch.equals(repo.getBranch())) {
+            return;
+        }
+        this.logger.info("Switching the pack from " + repo.getBranch() + " to " + config.branch);
+
+        if (repo.resolve(Constants.HEAD) == null) {
+            // Unborn branch, there is nothing to check out, just point HEAD at the new name
+            repo.updateRef(Constants.HEAD).link(Constants.R_HEADS + config.branch);
+            return;
+        }
+
+        this.git.fetch().setRemote(REMOTE).setCredentialsProvider(credentials()).call();
+        CheckoutCommand checkout = this.git.checkout().setName(config.branch);
+        if (repo.resolve(Constants.R_HEADS + config.branch) == null) {
+            checkout.setCreateBranch(true);
+            if (repo.resolve(Constants.R_REMOTES + REMOTE + "/" + config.branch) != null) {
+                checkout.setStartPoint(REMOTE + "/" + config.branch)
+                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK);
+            }
+        }
+        checkout.call();
     }
 
     private PackManifest readManifest() throws IOException {
