@@ -123,6 +123,12 @@ public class GitSyncService {
                 return false;
             }
         }
+
+        try {
+            checkoutConfiguredBranch(config);
+        } catch (Exception exception) {
+            this.logger.log(Level.SEVERE, "Could not switch the pack to branch " + config.branch, exception);
+        }
         return true;
     }
 
