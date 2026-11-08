@@ -6,7 +6,7 @@ What GitSync does in the situations that are not obvious. Everything here is how
 
 ### The same file is modified both in the repo and on this server
 
-The sync stops before writing anything. GitSync compares the file on disk against what the last render wrote (`render-state.json`); a mismatch means it was edited here, and overwriting it would throw that work away. The sync names the files and waits until you either publish the edits (`/gitsync pushupdate <message>`) or discard them (`/gitsync sync --force`). Note this compares against the *last render*, not the incoming commit - there is no line-level merge, it is all-or-nothing per file.
+The sync stops before writing anything. GitSync compares the file on disk against what the last render wrote (`render-state.json`); a mismatch means it was edited here, and overwriting it would throw that work away. The sync names the files and waits until you either publish the edits (`/git pushupdate <message>`) or discard them (`/git sync --force`). Note this compares against the *last render*, not the incoming commit - there is no line-level merge, it is all-or-nothing per file.
 
 ### A file was edited locally and the pack did NOT change it
 
@@ -28,7 +28,7 @@ Same as a manual edit - GitSync cannot tell them apart. Plugins that reformat or
 
 ### A variable value is changed in `server.yml`
 
-Run `/gitsync sync`. Even with no new commits, the render notices the desired content (new value substituted) no longer matches the disk and rewrites the file, then runs the reload commands for it. No conflict is raised, because the disk still matches what the last render wrote.
+Run `/git sync`. Even with no new commits, the render notices the desired content (new value substituted) no longer matches the disk and rewrites the file, then runs the reload commands for it. No conflict is raised, because the disk still matches what the last render wrote.
 
 ### A variable the pack uses is missing from `server.yml`
 
@@ -81,7 +81,7 @@ The first startup sync pulls jars the server did not boot with, so it stops the 
 
 ### The pack updates a plugin jar while the server is running
 
-The new jar is written and the old one (tracked under the same wildcard) removed, but the running server keeps the old version loaded. `/gitsync info` shows `Restart required: YES` with the jar named. No reload command can fix a jar - only a restart.
+The new jar is written and the old one (tracked under the same wildcard) removed, but the running server keeps the old version loaded. `/git info` shows `Restart required: YES` with the jar named. No reload command can fix a jar - only a restart.
 
 ### A jar arrives during the startup sync
 
@@ -125,11 +125,11 @@ Ignored. The pack cannot overwrite GitSync's own config, state, or the repositor
 
 ### Two servers push at (nearly) the same time
 
-The second push is rejected as non-fast-forward. JGit does not throw for this - GitSync reads the per-ref status, reports "Push rejected", and tells you to `/gitsync sync` first (which pulls the other server's commit), then push again. The commit already exists locally; `/gitsync showahead` lists it.
+The second push is rejected as non-fast-forward. JGit does not throw for this - GitSync reads the per-ref status, reports "Push rejected", and tells you to `/git sync` first (which pulls the other server's commit), then push again. The commit already exists locally; `/git showahead` lists it.
 
 ### The pull hits a merge conflict
 
-Happens when the local repo has commits the remote does not (e.g. a push failed and the remote moved on). The sync fails and names the conflicting files. `/gitsync sync --force` fetches and hard-resets onto the remote branch, discarding the local commits and any local edits.
+Happens when the local repo has commits the remote does not (e.g. a push failed and the remote moved on). The sync fails and names the conflicting files. `/git sync --force` fetches and hard-resets onto the remote branch, discarding the local commits and any local edits.
 
 ### The remote repository is empty
 
@@ -143,13 +143,13 @@ GitSync goes idle: no repo, no timer, commands answer that it is not initialized
 
 ### `role` or `instance` is changed in `server.yml`
 
-After `/gitsync reload` (or a restart) and a sync, the plan is rebuilt from the new layers: files owned by the old layer are rewritten from the new one, files only the old layers had are deleted, files only the new layers have appear. Jar swaps flag a restart as usual. Files rendered before the change are not conflicts - the state remembers what was written, not which role wrote it.
+After `/git reload` (or a restart) and a sync, the plan is rebuilt from the new layers: files owned by the old layer are rewritten from the new one, files only the old layers had are deleted, files only the new layers have appear. Jar swaps flag a restart as usual. Files rendered before the change are not conflicts - the state remembers what was written, not which role wrote it.
 
 ### `role`/`instance`/variables use `${ENV_VAR}` and the environment changed
 
-Environment variables are read when `server.yml` is loaded, from the JVM's environment - which is fixed at process start. A changed egg variable on Pterodactyl needs a server restart, not just `/gitsync reload`.
+Environment variables are read when `server.yml` is loaded, from the JVM's environment - which is fixed at process start. A changed egg variable on Pterodactyl needs a server restart, not just `/git reload`.
 
-### `/gitsync resethead` and files outside the pack
+### `/git resethead` and files outside the pack
 
 Safe. It hard-resets the pack repository and re-renders **declared paths only**. Configs and plugins not in `pack.json` are never touched, same as during a normal sync.
 
@@ -159,7 +159,7 @@ A one-shot flag: the next startup sync runs as `--force`, discarding local edits
 
 ### A `pushupdate` dies halfway (crash, push failure)
 
-Staged copies can be left inside the pack repository, but `plugins/` and the state are untouched - the state is only updated after a successful push. `/gitsync resethead` cleans the repo up (it runs `git clean` + `reset --hard` first).
+Staged copies can be left inside the pack repository, but `plugins/` and the state are untouched - the state is only updated after a successful push. `/git resethead` cleans the repo up (it runs `git clean` + `reset --hard` first).
 
 ### Windows and Linux servers share one repo
 

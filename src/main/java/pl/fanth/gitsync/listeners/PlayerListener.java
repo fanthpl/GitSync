@@ -29,7 +29,7 @@ public class PlayerListener implements Listener {
             }
             GitSyncService service = GitSyncPlugin.instance().gitSyncService();
             if (service.lastSyncFailed()) {
-                player.sendMessage(Component.text("[GitSync] The last sync failed. Try syncing manually using '/gitsync sync'.")
+                player.sendMessage(Component.text("[GitSync] The last sync failed. Try syncing manually using '/git sync'.")
                     .color(NamedTextColor.RED));
                 player.playSound(player, Sound.BLOCK_NOTE_BLOCK_PLING, 1.0F, 0.5F);
             }
@@ -38,8 +38,8 @@ public class PlayerListener implements Listener {
                 player.sendMessage(Component.text("[GitSync] The server needs a restart to apply the synced changes. "
                         + "Click for the details.")
                     .color(NamedTextColor.YELLOW)
-                    .hoverEvent(HoverEvent.showText(Component.text("/gitsync info")))
-                    .clickEvent(ClickEvent.runCommand("/gitsync info")));
+                    .hoverEvent(HoverEvent.showText(Component.text("/git info")))
+                    .clickEvent(ClickEvent.runCommand("/git info")));
                 player.playSound(player, Sound.BLOCK_NOTE_BLOCK_BELL, 1.0F, 1.0F);
             }
         }, 60L);

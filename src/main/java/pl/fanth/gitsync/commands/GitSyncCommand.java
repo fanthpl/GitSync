@@ -56,7 +56,7 @@ import java.util.logging.Level;
 public class GitSyncCommand extends BaseCommand {
     /** Chat scrollback is short, a full config rewrite would push everything else out of it. */
     private static final int DIFF_LINE_LIMIT = 120;
-    /** How many files /gitsync status lists before it splits into pages. */
+    /** How many files /git status lists before it splits into pages. */
     private static final int STATUS_PAGE_SIZE = 15;
     /** Tacked onto the commit message to publish variable lines that cannot be put back. */
     private static final String CONFIRM_FLAG = " --confirm";
@@ -251,10 +251,10 @@ public class GitSyncCommand extends BaseCommand {
         }
         return Component.text(label).color(NamedTextColor.YELLOW)
             .hoverEvent(HoverEvent.showText(Component.text("Page " + page)))
-            .clickEvent(ClickEvent.runCommand("/gitsync status " + page));
+            .clickEvent(ClickEvent.runCommand("/git status " + page));
     }
 
-    /** A [+] or [-] clicked in /gitsync status, which is printed again to show it. */
+    /** A [+] or [-] clicked in /git status, which is printed again to show it. */
     private void restage(CommandSender sender, List<String> paths, boolean staged, int page) {
         runAsync(sender, "staging files", git -> {
             GitSyncPlugin.instance().gitSyncService().setStaged(paths, staged);
@@ -262,7 +262,7 @@ public class GitSyncCommand extends BaseCommand {
         });
     }
 
-    /** Clicked on a file in /gitsync status, which is where its path comes from. */
+    /** Clicked on a file in /git status, which is where its path comes from. */
     private void diff(CommandSender sender, String path) {
         runAsync(sender, "building the diff", git -> {
             PackRenderer renderer = GitSyncPlugin.instance().gitSyncService().renderer();
@@ -392,7 +392,7 @@ public class GitSyncCommand extends BaseCommand {
         String busy = PushUpdatePrompt.busyWith();
         if (busy != null) {
             send(player, busy + " started a push that is still waiting to be answered, "
-                + "pick it up with /gitsync prompt show or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
+                + "pick it up with /git prompt show or drop it with /git prompt cancel.", NamedTextColor.RED);
             return;
         }
 
@@ -450,7 +450,7 @@ public class GitSyncCommand extends BaseCommand {
         String busy = PushUpdatePrompt.busyWith();
         if (busy != null) {
             send(sender, busy + " started a push that is still waiting to be answered, "
-                + "pick it up with /gitsync prompt show or drop it with /gitsync prompt cancel.", NamedTextColor.RED);
+                + "pick it up with /git prompt show or drop it with /git prompt cancel.", NamedTextColor.RED);
             return;
         }
 

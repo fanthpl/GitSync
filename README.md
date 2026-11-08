@@ -28,7 +28,7 @@ plugins/
 └── SomeOtherPlugin/         <- never touched, not in pack.json
 ```
 
-GitSync remembers what it wrote in `render-state.json`. A file whose content no longer matches that was edited on this server, so a sync that wants to change it stops instead, names the files, and waits - either publish those edits with `/gitsync pushupdate`, or throw them away with `/gitsync sync --force`. Nothing outside `pack.json` is ever written or deleted.
+GitSync remembers what it wrote in `render-state.json`. A file whose content no longer matches that was edited on this server, so a sync that wants to change it stops instead, names the files, and waits - either publish those edits with `/git pushupdate`, or throw them away with `/git sync --force`. Nothing outside `pack.json` is ever written or deleted.
 
 ## pack.json
 
@@ -119,7 +119,7 @@ serverName: ${GITSYNC_SERVER_NAME}
 password: ${GITSYNC_DB_PASSWORD}
 ```
 
-Rendering puts this server's values in, and `/gitsync pushupdate` takes them back out, so the pack keeps the `${GITSYNC_NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
+Rendering puts this server's values in, and `/git pushupdate` takes them back out, so the pack keeps the `${GITSYNC_NAME}` and the other servers keep theirs. Lines are matched by content, so editing the file around a variable - or adding and removing lines - does not disturb it.
 
 A default can ride in the placeholder itself, `${GITSYNC_PORT:25565}` - servers that declare the name use their value, the rest use the default.
 
@@ -133,10 +133,10 @@ All of them need the `gitsync.admin` permission.
 
 | Command | What it does |
 | --- | --- |
-| `/gitsync sync [--force]` (alias `pull`) | Pull and render now. `--force` takes the pack as-is: edits made on this server are overwritten instead of stopping the sync. |
-| `/gitsync info` | Remote, branch, commit, layers, how many plugins the pack holds - and whether the server needs a restart. |
-| `/gitsync checkout <branch>` | Switch to a branch (saved as `branch` in `config.yml`), or create it from the current one if it does not exist anywhere. |
-| `/gitsync reload` | Reload `config.yml` and `server.yml`, and restart the periodic check. |
+| `/git sync [--force]` (alias `pull`) | Pull and render now. `--force` takes the pack as-is: edits made on this server are overwritten instead of stopping the sync. |
+| `/git info` | Remote, branch, commit, layers, how many plugins the pack holds - and whether the server needs a restart. |
+| `/git checkout <branch>` | Switch to a branch (saved as `branch` in `config.yml`), or create it from the current one if it does not exist anywhere. |
+| `/git reload` | Reload `config.yml` and `server.yml`, and restart the periodic check. |
 
 ### Editing on a live server
 
@@ -144,16 +144,16 @@ Configs are meant to be tweaked in place. Do it, then publish:
 
 | Command | What it does |
 | --- | --- |
-| `/gitsync status` | Which synced files were edited here, and which layer each one would go back to. |
-| `/gitsync pushupdate <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
-| `/gitsync showahead` | Commits that exist locally but not on the remote. |
-| `/gitsync resethead` | Throw away the local edits and render the pack over them again. |
+| `/git status` | Which synced files were edited here, and which layer each one would go back to. |
+| `/git pushupdate <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
+| `/git showahead` | Commits that exist locally but not on the remote. |
+| `/git resethead` | Throw away the local edits and render the pack over them again. |
 
 A commit also looks for jars in `plugins/` that no `pack.json` entry claims. For each one it asks in chat where the plugin belongs - `[base]`, `[role/<role>]`, `[instance/<instance>]` or `[ignore]` - and the click does the rest. Only the jar joins the pack; add its `configPaths` by hand, because which of its files are config and which are player data is not something to guess at. `[ignore]` remembers the plugin in `data.yml` so the same jar is never asked about twice.
 
 ### Restart required
 
-Not every change can be applied by a reload command, so `/gitsync info` tracks the ones that cannot and names them:
+Not every change can be applied by a reload command, so `/git info` tracks the ones that cannot and names them:
 
 ```
 --- GitSync ---

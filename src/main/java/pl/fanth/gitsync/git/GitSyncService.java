@@ -338,7 +338,7 @@ public class GitSyncService {
                         + String.join(", ", jarChanged), NamedTextColor.YELLOW);
             }
             if (!this.restartReasons.isEmpty()) {
-                reply(feedback, "A server restart is required, run /gitsync info for the details.", NamedTextColor.YELLOW);
+                reply(feedback, "A server restart is required, run /git info for the details.", NamedTextColor.YELLOW);
             }
 
             runReloadCommands(commands);
@@ -548,7 +548,7 @@ public class GitSyncService {
     }
 
     /**
-     * Has pack.json been edited here since the last commit? A /gitsync pack edit only writes it,
+     * Has pack.json been edited here since the last commit? A /git pack edit only writes it,
      * so this is the only trace of it until a pushupdate carries it along.
      */
     public boolean packEdited() throws Exception {
@@ -564,7 +564,7 @@ public class GitSyncService {
         manifest.plugins.put(name, entry);
         Files.writeString(this.packDir.resolve("pack.json"), GSON.toJson(manifest), StandardCharsets.UTF_8);
         reply(sender, name + " updated in the local pack.json, nothing was pushed yet.", NamedTextColor.GREEN);
-        reply(sender, "Run /gitsync pushupdate to publish it together with the files it claims.", NamedTextColor.YELLOW);
+        reply(sender, "Run /git pushupdate to publish it together with the files it claims.", NamedTextColor.YELLOW);
     }
 
     /**
@@ -655,7 +655,7 @@ public class GitSyncService {
         }
 
         if (rejected) {
-            reply(sender, "Push failed. The remote most likely has commits you do not have, run /gitsync sync first.", NamedTextColor.RED);
+            reply(sender, "Push failed. The remote most likely has commits you do not have, run /git sync first.", NamedTextColor.RED);
         }
         return !rejected;
     }
@@ -728,7 +728,7 @@ public class GitSyncService {
         for (String path : conflicts) {
             reply(feedback, "  " + path, NamedTextColor.DARK_RED);
         }
-        reply(feedback, "Run /gitsync sync --force to take the remote as it is.", NamedTextColor.YELLOW);
+        reply(feedback, "Run /git sync --force to take the remote as it is.", NamedTextColor.YELLOW);
     }
 
     /**
@@ -780,8 +780,8 @@ public class GitSyncService {
         for (String path : conflicts) {
             reply(feedback, "  " + path, NamedTextColor.DARK_RED);
         }
-        reply(feedback, "Publish them with /gitsync pushupdate <message>, "
-                + "or throw them away with /gitsync sync --force.", NamedTextColor.YELLOW);
+        reply(feedback, "Publish them with /git pushupdate <message>, "
+                + "or throw them away with /git sync --force.", NamedTextColor.YELLOW);
     }
 
     /** Defaults applied once, when the repository is created. */

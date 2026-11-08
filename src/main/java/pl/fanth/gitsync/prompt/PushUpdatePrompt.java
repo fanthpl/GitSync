@@ -42,7 +42,7 @@ import java.util.logging.Level;
  *       had. Guessing at the role layer would quietly hand a file meant for this server to every
  *       server of the same kind, so each screen settles its plugin in one click or its files one
  *       by one;</li>
- *   <li>the summary, which lists every file the push touches, the way /gitsync status does.</li>
+ *   <li>the summary, which lists every file the push touches, the way /git status does.</li>
  * </ol>
  * A file that only drifted needs no question at all: it goes back into the layer it was rendered
  * from.
@@ -55,13 +55,13 @@ import java.util.logging.Level;
  */
 public class PushUpdatePrompt {
     /**
-     * One session for the whole server, shared: whoever runs /gitsync prompt show answers the same
+     * One session for the whole server, shared: whoever runs /git prompt show answers the same
      * questions the last admin left behind, and it outlives both their logout and a restart.
      */
     private static volatile PushUpdatePrompt active;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     /** Adding a value needs it typed out, and a click can only put a command in the chat box. */
-    private static final String INPUT_COMMAND = "/gitsync prompt ";
+    private static final String INPUT_COMMAND = "/git prompt ";
     /** Two lines per file, and the chat keeps around a hundred - a page has to leave room to read. */
     private static final int FILES_PER_PAGE = 8;
     /** The summary is there to be read before confirming, which a thousand lines is not. */
@@ -255,7 +255,7 @@ public class PushUpdatePrompt {
     private static PushUpdatePrompt of(Player player) {
         PushUpdatePrompt prompt = session();
         if (prompt == null) {
-            player.sendMessage(Component.text("Nothing is waiting to be published, run /gitsync pushupdate first.")
+            player.sendMessage(Component.text("Nothing is waiting to be published, run /git pushupdate first.")
                 .color(NamedTextColor.RED));
             return null;
         }
@@ -276,7 +276,7 @@ public class PushUpdatePrompt {
      */
     private boolean alive() {
         if (active != this) {
-            say("That push is already done, run /gitsync pushupdate again to publish more.",
+            say("That push is already done, run /git pushupdate again to publish more.",
                 NamedTextColor.RED);
             return false;
         }
@@ -372,7 +372,7 @@ public class PushUpdatePrompt {
         } else {
             renderSummary(printed);
         }
-        say("Lost in the chat? /gitsync prompt show prints this again.", NamedTextColor.DARK_GRAY);
+        say("Lost in the chat? /git prompt show prints this again.", NamedTextColor.DARK_GRAY);
     }
 
     private void renderPlugin(int printed) {
@@ -395,7 +395,7 @@ public class PushUpdatePrompt {
         this.viewer.sendMessage(Component.empty());
         if (this.editing) {
             // Where its files go is not asked: the ones it already had keep the layer they sit in,
-            // and a config path added here brings its files to the next /gitsync pushupdate
+            // and a config path added here brings its files to the next /git pushupdate
             this.viewer.sendMessage(Component.empty()
                 .append(button("[save]", NamedTextColor.GREEN, "Write the entry into the local pack.json, pushed by the next pushupdate")
                     .decorate(TextDecoration.BOLD)
@@ -565,7 +565,7 @@ public class PushUpdatePrompt {
         if (groups.isEmpty() && this.tracked.isEmpty()) {
             say("No file on this server differs from the pack.", NamedTextColor.GRAY);
         } else {
-            // The same lines /gitsync status prints, toggled the same way
+            // The same lines /git status prints, toggled the same way
             List<String[]> files = new ArrayList<>();
             List<PackRenderer.Kind> kinds = new ArrayList<>();
             for (FileGroup group : groups) {
@@ -643,7 +643,7 @@ public class PushUpdatePrompt {
             .append(cancelButton(printed)));
     }
 
-    /** The same staging /gitsync status toggles, so an unstaged file stays out of the push. */
+    /** The same staging /git status toggles, so an unstaged file stays out of the push. */
     private ClickCallback<Audience> restage(int printed, List<String> paths, boolean staged) {
         return audience -> click(audience, printed, () -> {
             service().setStaged(paths, staged);

@@ -9,7 +9,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import pl.fanth.gitsync.git.PackRenderer;
 
-/** The file lines /gitsync status and the pushupdate summary share, so the two read alike. */
+/** The file lines /git status and the pushupdate summary share, so the two read alike. */
 public final class StatusLines {
     private static final ClickCallback.Options UNLIMITED =
         ClickCallback.Options.builder().uses(ClickCallback.UNLIMITED_USES).build();
