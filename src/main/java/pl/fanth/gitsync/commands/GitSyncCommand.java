@@ -38,6 +38,7 @@ import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.git.PackManifest;
 import pl.fanth.gitsync.git.PackRenderer;
 import pl.fanth.gitsync.prompt.PushUpdatePrompt;
+import pl.fanth.gitsync.prompt.StatusLines;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -186,6 +187,7 @@ public class GitSyncCommand extends BaseCommand {
                 return;
             }
 
+            Set<String> unstaged = service.unstaged();
             List<Component> lines = new ArrayList<>();
             if (packEdited) {
                 lines.add(Component.text("[M] ").color(NamedTextColor.YELLOW)
@@ -193,12 +195,13 @@ public class GitSyncCommand extends BaseCommand {
                     .append(Component.text(" (the pack composition, edited here)").color(NamedTextColor.GRAY)));
             }
             for (PackRenderer.LocalChange change : changes) {
-                // A click shows the diff, any number of times - the line stays in chat after the first
-                lines.add(Component.text(prefixOf(change.kind())).color(colorOf(change.kind()))
-                    .append(Component.text(change.logicalPath()).color(NamedTextColor.WHITE))
-                    .append(Component.text(" -> " + change.targetLayer()).color(NamedTextColor.GRAY))
+                String path = change.logicalPath();
+                // The toggles carry their own click, the rest of the line shows the diff
+                lines.add(StatusLines.line(change.kind(), path, change.targetLayer(), !unstaged.contains(path),
+                        audience -> restage(sender, List.of(path), true, page),
+                        audience -> restage(sender, List.of(path), false, page))
                     .hoverEvent(HoverEvent.showText(Component.text("Show what differs from the pack")))
-                    .clickEvent(ClickEvent.callback(audience -> diff(sender, change.logicalPath()),
+                    .clickEvent(ClickEvent.callback(audience -> diff(sender, path),
                         ClickCallback.Options.builder().uses(ClickCallback.UNLIMITED_USES).build())));
             }
             for (String jar : unknown) {
@@ -209,7 +212,14 @@ public class GitSyncCommand extends BaseCommand {
 
             int pages = (lines.size() + STATUS_PAGE_SIZE - 1) / STATUS_PAGE_SIZE;
             int current = Math.max(1, Math.min(page, pages));
-            send(sender, "--- Local edits (" + lines.size() + ") ---", NamedTextColor.GOLD);
+            long staged = changes.stream().filter(change -> !unstaged.contains(change.logicalPath())).count();
+            send(sender, "--- Local edits (" + lines.size() + ", " + staged + " staged) ---", NamedTextColor.GOLD);
+            if (!changes.isEmpty()) {
+                List<String> paths = changes.stream().map(PackRenderer.LocalChange::logicalPath).toList();
+                sender.sendMessage(StatusLines.allRow(
+                    audience -> restage(sender, paths, true, page),
+                    audience -> restage(sender, paths, false, page)));
+            }
             int from = (current - 1) * STATUS_PAGE_SIZE;
             lines.subList(from, Math.min(lines.size(), from + STATUS_PAGE_SIZE)).forEach(sender::sendMessage);
             if (pages > 1) {
@@ -229,20 +239,12 @@ public class GitSyncCommand extends BaseCommand {
             .clickEvent(ClickEvent.runCommand("/gitsync git status " + page));
     }
 
-    private String prefixOf(PackRenderer.Kind kind) {
-        return switch (kind) {
-            case NEW -> "[A] ";
-            case MODIFIED -> "[M] ";
-            case DELETED -> "[D] ";
-        };
-    }
-
-    private NamedTextColor colorOf(PackRenderer.Kind kind) {
-        return switch (kind) {
-            case NEW -> NamedTextColor.GREEN;
-            case MODIFIED -> NamedTextColor.YELLOW;
-            case DELETED -> NamedTextColor.RED;
-        };
+    /** A [+] or [-] clicked in /gitsync git status, which is printed again to show it. */
+    private void restage(CommandSender sender, List<String> paths, boolean staged, int page) {
+        runAsync(sender, "staging files", git -> {
+            GitSyncPlugin.instance().gitSyncService().setStaged(paths, staged);
+            gitStatus(sender, page);
+        });
     }
 
     /** Clicked on a file in /gitsync git status, which is where its path comes from. */

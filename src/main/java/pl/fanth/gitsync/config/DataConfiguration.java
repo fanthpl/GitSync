@@ -20,4 +20,8 @@ public class DataConfiguration extends OkaeriConfig {
     @Comment("made on this server. Flipped back to false as soon as that sync has run, so it")
     @Comment("only ever applies once.")
     public boolean forceNextStartupSync = false;
+
+    @Comment("")
+    @Comment("Edited files left out of /gitsync pushupdate, toggled with [+] and [-] in /gitsync git status.")
+    public List<String> unstagedPaths = new ArrayList<>();
 }

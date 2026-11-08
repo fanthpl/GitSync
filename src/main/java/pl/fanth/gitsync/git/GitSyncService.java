@@ -24,6 +24,7 @@ import org.eclipse.jgit.transport.PushResult;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import pl.fanth.gitsync.GitSyncPlugin;
+import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.config.ServerConfiguration;
 
@@ -35,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -417,6 +419,20 @@ public class GitSyncService {
         return null;
     }
 
+    /** Logical paths left out of the next push, everything else that drifted is staged. */
+    public synchronized Set<String> unstaged() {
+        return this.plugin == null ? Set.of() : new LinkedHashSet<>(this.plugin.dataConfiguration().unstagedPaths);
+    }
+
+    public synchronized void setStaged(Collection<String> paths, boolean staged) {
+        DataConfiguration data = this.plugin.dataConfiguration();
+        data.unstagedPaths.removeAll(paths);
+        if (!staged) {
+            data.unstagedPaths.addAll(paths);
+        }
+        data.save();
+    }
+
     /** Jars in plugins/ that no pack entry claims and this server was not told to keep private. */
     public List<String> unknownJars() throws IOException {
         List<String> ignored = new ArrayList<>();
@@ -469,7 +485,8 @@ public class GitSyncService {
 
         List<PackRenderer.LocalChange> changes = new ArrayList<>(renderer.localChanges(manifest, state));
         // Nothing is staged and nothing goes into the state for these, so they turn up as new again
-        changes.removeIf(change -> skipped.contains(change.logicalPath()));
+        Set<String> unstaged = unstaged();
+        changes.removeIf(change -> skipped.contains(change.logicalPath()) || unstaged.contains(change.logicalPath()));
         changes.replaceAll(change -> retarget(change, manifest, addedLayers, fileLayers));
 
         // Worked out before anything is written, so a refusal leaves the pack untouched

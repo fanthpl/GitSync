@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickCallback;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -564,26 +565,42 @@ public class PushUpdatePrompt {
         if (groups.isEmpty() && this.tracked.isEmpty()) {
             say("No file on this server differs from the pack.", NamedTextColor.GRAY);
         } else {
-            say("Files:", NamedTextColor.GRAY);
-            // A plugin bringing thousands of files would otherwise bury the confirm button under
-            // a list nobody can scroll back through anyway
-            int total = groups.stream().mapToInt(group -> group.drafts.size()).sum() + this.tracked.size();
-            int left = SUMMARY_LINES;
+            // The same lines /gitsync git status prints, toggled the same way
+            List<String[]> files = new ArrayList<>();
+            List<PackRenderer.Kind> kinds = new ArrayList<>();
             for (FileGroup group : groups) {
                 for (FileDraft draft : group.drafts) {
-                    if (left-- > 0) {
-                        fileLine(PackRenderer.Kind.NEW, draft.path, placementOf(draft));
-                    }
+                    files.add(new String[] {draft.path, placementOf(draft)});
+                    kinds.add(PackRenderer.Kind.NEW);
                 }
             }
             for (PackRenderer.LocalChange change : this.tracked) {
-                if (left-- > 0) {
-                    fileLine(change.kind(), change.logicalPath(), change.targetLayer());
-                }
+                files.add(new String[] {change.logicalPath(), change.targetLayer()});
+                kinds.add(change.kind());
             }
-            if (total > SUMMARY_LINES) {
-                say("  ... and " + (total - SUMMARY_LINES) + " more, /gitsync git status lists every one.",
-                    NamedTextColor.GRAY);
+            List<String> paths = files.stream().map(file -> file[0]).toList();
+            Set<String> unstaged = service().unstaged();
+
+            say("Files (" + paths.stream().filter(path -> !unstaged.contains(path)).count() + " of "
+                + paths.size() + " staged):", NamedTextColor.GRAY);
+            this.viewer.sendMessage(StatusLines.allRow(restage(printed, paths, true), restage(printed, paths, false)));
+            // A plugin bringing thousands of files would otherwise bury the confirm button
+            int pages = (files.size() + SUMMARY_LINES - 1) / SUMMARY_LINES;
+            this.page = Math.max(0, Math.min(this.page, pages - 1));
+            int from = this.page * SUMMARY_LINES;
+            int to = Math.min(from + SUMMARY_LINES, files.size());
+            for (int i = from; i < to; i++) {
+                String path = files.get(i)[0];
+                this.viewer.sendMessage(Component.text("  ").append(StatusLines.line(kinds.get(i), path,
+                    files.get(i)[1], !unstaged.contains(path),
+                    restage(printed, List.of(path), true), restage(printed, List.of(path), false))));
+            }
+            if (pages > 1) {
+                this.viewer.sendMessage(Component.empty()
+                    .append(pageButton("«", this.page - 1, this.page > 0, printed))
+                    .append(Component.text(" files " + (from + 1) + "-" + to + " of " + files.size() + " ")
+                        .color(NamedTextColor.GRAY))
+                    .append(pageButton("»", this.page + 1, this.page + 1 < pages, printed)));
             }
         }
 
@@ -626,11 +643,12 @@ public class PushUpdatePrompt {
             .append(cancelButton(printed)));
     }
 
-    /** The same shape /gitsync git status prints, so the two read alike. */
-    private void fileLine(PackRenderer.Kind kind, String path, String layer) {
-        this.viewer.sendMessage(Component.text("  " + prefixOf(kind)).color(colorOfKind(kind))
-            .append(Component.text(path).color(NamedTextColor.WHITE))
-            .append(Component.text(" -> " + layer).color(NamedTextColor.GRAY)));
+    /** The same staging /gitsync git status toggles, so an unstaged file stays out of the push. */
+    private ClickCallback<Audience> restage(int printed, List<String> paths, boolean staged) {
+        return audience -> click(audience, printed, () -> {
+            service().setStaged(paths, staged);
+            render();
+        });
     }
 
     /** Only the local pack.json is written, so nothing reaches the remote until a pushupdate. */
@@ -913,22 +931,6 @@ public class PushUpdatePrompt {
             .findFirst()
             .map(group -> group.drafts.get(0).layer)
             .orElse(renderer().defaultLayer());
-    }
-
-    private String prefixOf(PackRenderer.Kind kind) {
-        return switch (kind) {
-            case NEW -> "[A] ";
-            case MODIFIED -> "[M] ";
-            case DELETED -> "[D] ";
-        };
-    }
-
-    private NamedTextColor colorOfKind(PackRenderer.Kind kind) {
-        return switch (kind) {
-            case NEW -> NamedTextColor.GREEN;
-            case MODIFIED -> NamedTextColor.YELLOW;
-            case DELETED -> NamedTextColor.RED;
-        };
     }
 
     private Component button(String label, TextColor color, String hover) {
