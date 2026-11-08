@@ -133,7 +133,7 @@ All of them need the `gitsync.admin` permission.
 
 | Command | What it does |
 | --- | --- |
-| `/gitsync sync [--force]` | Pull and render now. `--force` takes the pack as-is: edits made on this server are overwritten instead of stopping the sync. |
+| `/gitsync sync [--force]` (alias `pull`) | Pull and render now. `--force` takes the pack as-is: edits made on this server are overwritten instead of stopping the sync. |
 | `/gitsync info` | Remote, branch, commit, layers, how many plugins the pack holds - and whether the server needs a restart. |
 | `/gitsync checkout <branch>` | Switch to a branch (saved as `branch` in `config.yml`), or create it from the current one if it does not exist anywhere. |
 | `/gitsync reload` | Reload `config.yml` and `server.yml`, and restart the periodic check. |

@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -33,8 +34,9 @@ public final class PluginFileCompletion {
             return List.of();
         }
 
+        List<String> matches;
         try (Stream<Path> files = Files.list(directory)) {
-            return files
+            matches = files
                 .filter(file -> !parent.isEmpty()
                     || (Files.isDirectory(file) && !file.getFileName().toString().equals(dataFolder.getName())))
                 .map(file -> parent + file.getFileName() + (Files.isDirectory(file) ? "/" : ""))
@@ -44,5 +46,14 @@ public final class PluginFileCompletion {
         } catch (IOException exception) {
             return List.of();
         }
+
+        // The client does not ask again after a suggestion is tabbed in, so a lone folder brings its
+        // contents along - the next tab then walks into it instead of stopping at the slash.
+        if (matches.size() == 1 && matches.get(0).endsWith("/")) {
+            List<String> expanded = new ArrayList<>(matches);
+            expanded.addAll(complete(matches.get(0)));
+            return expanded;
+        }
+        return matches;
     }
 }

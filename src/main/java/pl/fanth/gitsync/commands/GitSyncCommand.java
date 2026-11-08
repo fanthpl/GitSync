@@ -73,7 +73,7 @@ public class GitSyncCommand extends BaseCommand {
         help.showHelp();
     }
 
-    @Subcommand("sync")
+    @Subcommand("sync|pull")
     @Description("Sync the pack with the remote repository. --force overwrites the edits made on this server")
     @Syntax("[--force]")
     @CommandCompletion("--force")
