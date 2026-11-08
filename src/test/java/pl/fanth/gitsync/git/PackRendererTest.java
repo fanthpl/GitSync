@@ -73,6 +73,22 @@ class PackRendererTest {
         assertFalse(plan.containsKey("Other/config.yml"), "only what pack.json declares is rendered");
     }
 
+    /** Our own jar is never rendered over the running one, only handed out through selfJar(). */
+    @Test
+    void ourOwnJarStaysOutOfThePlanAndTheLocalChanges() throws Exception {
+        PackManifest pack = PackManifest.parse("""
+                { "plugins": { "GitSync": { "pluginJarWildcard": "GitSync-*.jar" } } }
+                """);
+        PackRenderer renderer = renderer("city", "");
+        packed("base/GitSync-1.0.jar", "old");
+        packed("role/city/GitSync-1.1.jar", "new");
+        Files.writeString(this.plugins.resolve("GitSync-1.0.jar"), "running");
+
+        assertTrue(renderer.plan(pack).isEmpty());
+        assertEquals(this.pack.resolve("role/city/GitSync-1.1.jar"), renderer.selfJar(pack));
+        assertTrue(renderer.localChanges(pack, new PackRenderer.State()).isEmpty());
+    }
+
     /** A jar override has a different file name, so both would land in plugins/ without this. */
     @Test
     void aRoleJarHidesTheBaseJarOfTheSamePlugin() throws Exception {

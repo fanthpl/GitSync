@@ -5,6 +5,7 @@ import co.aikar.commands.CommandHelp;
 import co.aikar.commands.annotation.CommandAlias;
 import co.aikar.commands.annotation.CommandCompletion;
 import co.aikar.commands.annotation.CommandPermission;
+import co.aikar.commands.annotation.Default;
 import co.aikar.commands.annotation.Description;
 import co.aikar.commands.annotation.HelpCommand;
 import co.aikar.commands.annotation.Optional;
@@ -12,6 +13,7 @@ import co.aikar.commands.annotation.Private;
 import co.aikar.commands.annotation.Subcommand;
 import co.aikar.commands.annotation.Syntax;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickCallback;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -45,6 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 @CommandAlias("gitsync")
@@ -52,6 +55,8 @@ import java.util.logging.Level;
 public class GitSyncCommand extends BaseCommand {
     /** Chat scrollback is short, a full config rewrite would push everything else out of it. */
     private static final int DIFF_LINE_LIMIT = 120;
+    /** How many files /gitsync git status lists before it splits into pages. */
+    private static final int STATUS_PAGE_SIZE = 15;
     /** Tacked onto the commit message to publish variable lines that cannot be put back. */
     private static final String CONFIRM_FLAG = " --confirm";
 
@@ -109,7 +114,7 @@ public class GitSyncCommand extends BaseCommand {
                 GitSyncPlugin.instance().gitSyncService().resetRender(sender));
     }
 
-    @Subcommand("status")
+    @Subcommand("info")
     @Description("Show the pack state and whether the server needs a restart")
     public void status(CommandSender sender) {
         GitSyncService service = GitSyncPlugin.instance().gitSyncService();
@@ -125,7 +130,7 @@ public class GitSyncCommand extends BaseCommand {
             field(sender, "Branch", repo.getBranch());
             field(sender, "Commit", describeHead(repo));
             field(sender, "Layers", String.join(" -> ", service.renderer().layers()));
-            field(sender, "Pack", manifest.plugins.size() + " plugin(s): " + String.join(", ", manifest.plugins.keySet()));
+            field(sender, "Pack", manifest.plugins.size() + " plugin(s)");
             field(sender, "Auto sync", "every " + config.checkIntervalSeconds + "s" + (service.isSyncing() ? " (running now)" : ""));
 
             if (server.role.isBlank()) {
@@ -166,7 +171,8 @@ public class GitSyncCommand extends BaseCommand {
 
     @Subcommand("git status")
     @Description("Show which synced files were edited on this server")
-    public void gitStatus(CommandSender sender) {
+    @Syntax("[page]")
+    public void gitStatus(CommandSender sender, @Default("1") int page) {
         send(sender, "Checking for local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "checking for local edits", git -> {
@@ -180,23 +186,47 @@ public class GitSyncCommand extends BaseCommand {
                 return;
             }
 
-            send(sender, "--- Local edits ---", NamedTextColor.GOLD);
+            List<Component> lines = new ArrayList<>();
             if (packEdited) {
-                sender.sendMessage(Component.text("[M] ").color(NamedTextColor.YELLOW)
+                lines.add(Component.text("[M] ").color(NamedTextColor.YELLOW)
                     .append(Component.text("pack.json").color(NamedTextColor.WHITE))
                     .append(Component.text(" (the pack composition, edited here)").color(NamedTextColor.GRAY)));
             }
             for (PackRenderer.LocalChange change : changes) {
-                sender.sendMessage(Component.text(prefixOf(change.kind())).color(colorOf(change.kind()))
+                // A click shows the diff, any number of times - the line stays in chat after the first
+                lines.add(Component.text(prefixOf(change.kind())).color(colorOf(change.kind()))
                     .append(Component.text(change.logicalPath()).color(NamedTextColor.WHITE))
-                    .append(Component.text(" -> " + change.targetLayer()).color(NamedTextColor.GRAY)));
+                    .append(Component.text(" -> " + change.targetLayer()).color(NamedTextColor.GRAY))
+                    .hoverEvent(HoverEvent.showText(Component.text("Show what differs from the pack")))
+                    .clickEvent(ClickEvent.callback(audience -> diff(sender, change.logicalPath()),
+                        ClickCallback.Options.builder().uses(ClickCallback.UNLIMITED_USES).build())));
             }
             for (String jar : unknown) {
-                sender.sendMessage(Component.text("[?] ").color(NamedTextColor.GRAY)
+                lines.add(Component.text("[?] ").color(NamedTextColor.GRAY)
                     .append(Component.text(jar).color(NamedTextColor.WHITE))
                     .append(Component.text(" (not in the pack)").color(NamedTextColor.GRAY)));
             }
+
+            int pages = (lines.size() + STATUS_PAGE_SIZE - 1) / STATUS_PAGE_SIZE;
+            int current = Math.max(1, Math.min(page, pages));
+            send(sender, "--- Local edits (" + lines.size() + ") ---", NamedTextColor.GOLD);
+            int from = (current - 1) * STATUS_PAGE_SIZE;
+            lines.subList(from, Math.min(lines.size(), from + STATUS_PAGE_SIZE)).forEach(sender::sendMessage);
+            if (pages > 1) {
+                sender.sendMessage(pageArrow("<< ", current - 1, current > 1)
+                    .append(Component.text("Page " + current + "/" + pages).color(NamedTextColor.GOLD))
+                    .append(pageArrow(" >>", current + 1, current < pages)));
+            }
         });
+    }
+
+    private Component pageArrow(String label, int page, boolean enabled) {
+        if (!enabled) {
+            return Component.text(label).color(NamedTextColor.DARK_GRAY);
+        }
+        return Component.text(label).color(NamedTextColor.YELLOW)
+            .hoverEvent(HoverEvent.showText(Component.text("Page " + page)))
+            .clickEvent(ClickEvent.runCommand("/gitsync git status " + page));
     }
 
     private String prefixOf(PackRenderer.Kind kind) {
@@ -215,69 +245,33 @@ public class GitSyncCommand extends BaseCommand {
         };
     }
 
-    @Subcommand("git diff")
-    @Description("Show what differs between the pack and the files on this server")
-    @Syntax("[path]")
-    public void gitDiff(CommandSender sender, @Optional String path) {
-        send(sender, "Building the diff...", NamedTextColor.GREEN);
-
+    /** Clicked on a file in /gitsync git status, which is where its path comes from. */
+    private void diff(CommandSender sender, String path) {
         runAsync(sender, "building the diff", git -> {
-            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            PackRenderer renderer = service.renderer();
-            Map<String, String> plan = renderer.plan(service.manifest());
-
-            List<PackRenderer.LocalChange> changes = new ArrayList<>(service.localChanges());
-            if (path != null) {
-                String prefix = path.endsWith("/") ? path : path + "/";
-                changes.removeIf(change -> !change.logicalPath().equals(path) && !change.logicalPath().startsWith(prefix));
+            PackRenderer renderer = GitSyncPlugin.instance().gitSyncService().renderer();
+            byte[] packed = renderer.renderedBytes(renderer.plan(GitSyncPlugin.instance().gitSyncService().manifest()), path);
+            Path file = renderer.pluginsFile(path);
+            byte[] local = Files.isRegularFile(file) ? Files.readAllBytes(file) : new byte[0];
+            if (packed == null) {
+                packed = new byte[0];
             }
 
-            if (changes.isEmpty()) {
-                send(sender, path == null ? "No local edits." : "No local edits under " + path + ".", NamedTextColor.GREEN);
+            send(sender, "--- " + path + " ---", NamedTextColor.GOLD);
+            if (RawText.isBinary(packed) || RawText.isBinary(local)) {
+                send(sender, "(binary)", NamedTextColor.GRAY);
                 return;
             }
 
-            send(sender, "--- Diff against the pack ---", NamedTextColor.GOLD);
-
-            int budget = DIFF_LINE_LIMIT;
-            int truncated = 0;
-            int shown = 0;
-            for (PackRenderer.LocalChange change : changes) {
-                byte[] packed = renderer.renderedBytes(plan, change.logicalPath());
-                Path file = renderer.pluginsFile(change.logicalPath());
-                byte[] local = Files.isRegularFile(file) ? Files.readAllBytes(file) : new byte[0];
-                if (packed == null) {
-                    packed = new byte[0];
-                }
-
-                if (RawText.isBinary(packed) || RawText.isBinary(local)) {
-                    shown++;
-                    send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
-                    send(sender, "  (binary)", NamedTextColor.GRAY);
-                    continue;
-                }
-
-                List<String> hunks = hunksOf(packed, local);
-                if (hunks.isEmpty()) {
-                    continue;
-                }
-
-                shown++;
-                send(sender, change.kind() + " " + change.logicalPath(), NamedTextColor.AQUA);
-                for (String line : hunks) {
-                    if (budget-- <= 0) {
-                        truncated++;
-                        continue;
-                    }
-                    sender.sendMessage(Component.text(shorten(line)).color(diffColor(line)));
-                }
-            }
-
-            if (truncated > 0) {
-                send(sender, "... " + truncated + " more line(s), narrow it down with /gitsync git diff <path>", NamedTextColor.GRAY);
-            }
-            if (shown == 0) {
+            List<String> hunks = hunksOf(packed, local);
+            if (hunks.isEmpty()) {
                 send(sender, "Nothing reads differently from the pack.", NamedTextColor.GREEN);
+                return;
+            }
+            for (String line : hunks.subList(0, Math.min(hunks.size(), DIFF_LINE_LIMIT))) {
+                sender.sendMessage(Component.text(shorten(line)).color(diffColor(line)));
+            }
+            if (hunks.size() > DIFF_LINE_LIMIT) {
+                send(sender, "... " + (hunks.size() - DIFF_LINE_LIMIT) + " more line(s)", NamedTextColor.GRAY);
             }
         });
     }
@@ -388,7 +382,7 @@ public class GitSyncCommand extends BaseCommand {
         runAsync(player, "reading the pack entry", git -> {
             PackManifest.Entry entry = GitSyncPlugin.instance().gitSyncService().manifest().plugins.get(name);
             if (entry == null) {
-                send(player, name + " is not in the pack, /gitsync status lists what is.", NamedTextColor.RED);
+                send(player, name + " is not in the pack, tab completion lists what is.", NamedTextColor.RED);
                 return;
             }
             new PushUpdatePrompt(player, name, entry).start();
@@ -449,7 +443,8 @@ public class GitSyncCommand extends BaseCommand {
             List<String> jars = service.unknownJars();
 
             if (changes.isEmpty() && jars.isEmpty()) {
-                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of());
+                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of(),
+                    refused -> suggestConfirm(sender, refused));
                 return;
             }
 
@@ -462,22 +457,28 @@ public class GitSyncCommand extends BaseCommand {
                     send(sender, "Run this command in game to place them, the buttons need a chat to click in.", NamedTextColor.YELLOW);
                     return;
                 }
-                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of());
+                doPublish(sender, message, confirmed, List.of(), Map.of(), Set.of(),
+                    refused -> suggestConfirm(sender, refused));
                 return;
             }
             new PushUpdatePrompt(player, changes, jars, message, confirmed).start();
         });
     }
 
+    /** Hands back the lines that stopped the commit, empty once it went through or failed for good. */
     private void doPublish(CommandSender sender, String message, boolean confirmed,
                            List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers,
-                           Set<String> skipped) {
+                           Set<String> skipped, Consumer<List<String>> result) {
         send(sender, "Publishing local edits...", NamedTextColor.GREEN);
 
         runAsync(sender, "committing and pushing", git -> {
-            GitSyncService service = GitSyncPlugin.instance().gitSyncService();
-            if (!service.commitAndPush(sender, message, confirmed, newPlugins, fileLayers, skipped).isEmpty()) {
-                offerToPublishAnyway(sender, message, newPlugins, fileLayers, skipped);
+            List<String> refused = List.of();
+            // Reported even when it throws, so a prompt waiting on it is never stuck
+            try {
+                refused = GitSyncPlugin.instance().gitSyncService()
+                    .commitAndPush(sender, message, confirmed, newPlugins, fileLayers, skipped);
+            } finally {
+                result.accept(refused);
             }
         });
     }
@@ -488,19 +489,11 @@ public class GitSyncCommand extends BaseCommand {
                 GitSyncPlugin.instance().gitSyncService().saveEntry(sender, name, entry));
     }
 
-    /** The service already named the lines it could not put back, this is the way past it. */
-    private void offerToPublishAnyway(CommandSender sender, String message,
-                                      List<GitSyncService.NewPlugin> newPlugins, Map<String, String> fileLayers,
-                                      Set<String> skipped) {
-        if (!(sender instanceof Player)) {
+    /** No prompt is waiting on this push, so the flag is the way past the lines the service named. */
+    private void suggestConfirm(CommandSender sender, List<String> refused) {
+        if (!refused.isEmpty()) {
             send(sender, "Add " + CONFIRM_FLAG.trim() + " to the end of the message to publish them anyway.", NamedTextColor.YELLOW);
-            return;
         }
-
-        // Carries the answers along, so saying yes here does not ask about every jar again
-        sender.sendMessage(Component.text("[publish anyway]").color(NamedTextColor.RED)
-                .hoverEvent(HoverEvent.showText(Component.text("Send this server's own values to every server rendering these files")))
-                .clickEvent(ClickEvent.callback(audience -> doPublish(sender, message, true, newPlugins, fileLayers, skipped))));
     }
 
     /** Run a git action off the main thread on the shared repository handle. */

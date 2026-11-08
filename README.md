@@ -134,7 +134,7 @@ All of them need the `gitsync.admin` permission.
 | Command | What it does |
 | --- | --- |
 | `/gitsync sync [--force]` | Pull and render now. `--force` takes the pack as-is: edits made on this server are overwritten instead of stopping the sync. |
-| `/gitsync status` | Remote, branch, commit, layers, what the pack contains - and whether the server needs a restart. |
+| `/gitsync info` | Remote, branch, commit, layers, how many plugins the pack holds - and whether the server needs a restart. |
 | `/gitsync reload` | Reload `config.yml` and `server.yml`, and restart the periodic check. |
 
 ### Editing on a live server
@@ -144,7 +144,6 @@ Configs are meant to be tweaked in place. Do it, then publish:
 | Command | What it does |
 | --- | --- |
 | `/gitsync git status` | Which synced files were edited here, and which layer each one would go back to. |
-| `/gitsync git diff [path]` | What differs between the pack and the files on this server. |
 | `/gitsync pushupdate <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
 | `/gitsync git showahead` | Commits that exist locally but not on the remote. |
 | `/gitsync git resethead` | Throw away the local edits and render the pack over them again. |
@@ -153,7 +152,7 @@ A commit also looks for jars in `plugins/` that no `pack.json` entry claims. For
 
 ### Restart required
 
-Not every change can be applied by a reload command, so `/gitsync status` tracks the ones that cannot and names them:
+Not every change can be applied by a reload command, so `/gitsync info` tracks the ones that cannot and names them:
 
 ```
 --- GitSync ---
@@ -175,6 +174,8 @@ A restart is flagged when a sync adds, removes or updates a plugin jar, or when 
 A config is useless if its owner already read the old one, so GitSync syncs from a Paper **plugin bootstrapper** - the phase that runs before any plugin is loaded. By the time ItemsAdder or EssentialsX starts, their configs are already the ones from the repository.
 
 Jars are the exception, and no plugin can work around it: the server scans `plugins/` and builds its plugin list *before* the bootstrap phase runs. A jar rendered during that sync cannot be loaded into a boot that already began. So when a sync replaces a jar during startup, GitSync logs it and stops the server, expecting the wrapper (systemd, Pterodactyl, Docker, a start script loop) to bring it back up with the new jars in place. **Without an auto-restarting wrapper the server will simply stay down.** Set `syncOnStartup: false` if you would rather sync only on the timer and handle jars yourself.
+
+GitSync can update itself: add a `"GitSync": { "pluginJarWildcard": "GitSync-*.jar" }` entry and commit the jar. Only the jar is synced, and it goes into `plugins/update/` so the server swaps it in on the next start. Your `config.yml` and `server.yml` stay local.
 
 ## Migrating from the old layout
 

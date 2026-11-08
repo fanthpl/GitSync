@@ -27,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -70,6 +71,8 @@ public class PushUpdatePrompt {
 
     /** Whoever is looking at it right now - not part of the session, so it is never saved. */
     private transient Player viewer;
+    /** The commit is running, so nothing may print a second confirm - a restart has stopped it either way. */
+    private transient boolean publishing;
     /** Who started it, for the message a second push gets. */
     private String starter;
     private String message;
@@ -83,6 +86,8 @@ public class PushUpdatePrompt {
     private final List<FileGroup> fileGroups = new ArrayList<>();
     /** Edited and deleted files, which already know the layer they came from. */
     private final List<PackRenderer.LocalChange> tracked = new ArrayList<>();
+    /** Lines whose variable was edited by hand, which stopped the confirmed commit - null until then. */
+    private List<String> refused;
 
     /** Which screen is up: a plugin, then the new files, then the summary. */
     private int index;
@@ -143,9 +148,10 @@ public class PushUpdatePrompt {
 
     /** Where the answers go once they are confirmed, which a restart cannot bring back by itself. */
     public interface Publisher {
+        /** The result gets the lines that stopped the commit, empty once it went through or failed for good. */
         void publish(CommandSender sender, String message, boolean confirmed,
                      List<GitSyncService.NewPlugin> plugins, Map<String, String> fileLayers,
-                     Set<String> skipped);
+                     Set<String> skipped, Consumer<List<String>> result);
     }
 
     public static void publisher(Publisher publisher) {
@@ -231,8 +237,14 @@ public class PushUpdatePrompt {
 
     /** Nothing has been written yet, so dropping the session is the whole of cancelling it. */
     public static void cancel(Player player) {
-        if (session() == null) {
+        PushUpdatePrompt prompt = session();
+        if (prompt == null) {
             player.sendMessage(Component.text("Nothing is waiting to be published.").color(NamedTextColor.RED));
+            return;
+        }
+        if (prompt.publishing) {
+            player.sendMessage(Component.text("The push is being committed right now, too late to cancel it.")
+                .color(NamedTextColor.RED));
             return;
         }
         drop();
@@ -243,6 +255,11 @@ public class PushUpdatePrompt {
         PushUpdatePrompt prompt = session();
         if (prompt == null) {
             player.sendMessage(Component.text("Nothing is waiting to be published, run /gitsync pushupdate first.")
+                .color(NamedTextColor.RED));
+            return null;
+        }
+        if (prompt.publishing) {
+            player.sendMessage(Component.text("The push is being committed right now, wait for it to finish.")
                 .color(NamedTextColor.RED));
             return null;
         }
@@ -345,7 +362,9 @@ public class PushUpdatePrompt {
 
         this.viewer.sendMessage(Component.text("=== ATTENTION REQUIRED ===")
             .color(NamedTextColor.RED).decorate(TextDecoration.BOLD));
-        if (this.index < this.plugins.size()) {
+        if (this.refused != null) {
+            renderRefused(printed);
+        } else if (this.index < this.plugins.size()) {
             renderPlugin(printed);
         } else if (this.index < summaryScreen()) {
             renderFileGroup(printed, this.index - this.plugins.size());
@@ -574,7 +593,35 @@ public class PushUpdatePrompt {
             .append(Component.space())
             .append(button("[confirm and push]", NamedTextColor.GREEN, "Commit everything above and push it")
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, this::confirm))))
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> confirm(false)))))
+            .append(Component.space())
+            .append(cancelButton(printed)));
+    }
+
+    /**
+     * The commit was stopped by a variable edited by hand. Kept as a screen of its own, so the way
+     * past it survives the chat scrolling away and a restart like every other question.
+     */
+    private void renderRefused(int printed) {
+        say("--- Not published yet ---", NamedTextColor.GOLD);
+        say(this.refused.size() + " line(s) hold a variable that was edited by hand, "
+            + "so this server's own values would go to every other server:", NamedTextColor.RED);
+        for (String line : this.refused) {
+            say("  " + line, NamedTextColor.DARK_RED);
+        }
+        say("Put the ${GITSYNC_VARIABLE} back and confirm again, or publish anyway.", NamedTextColor.YELLOW);
+
+        this.viewer.sendMessage(Component.empty());
+        this.viewer.sendMessage(Component.empty()
+            .append(button("«", NamedTextColor.AQUA, "To the summary")
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
+                    this.refused = null;
+                    render();
+                }))))
+            .append(Component.space())
+            .append(button("[publish anyway]", NamedTextColor.RED, "Send this server's own values to every server rendering these files")
+                .decorate(TextDecoration.BOLD)
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> confirm(true)))))
             .append(Component.space())
             .append(cancelButton(printed)));
     }
@@ -598,33 +645,25 @@ public class PushUpdatePrompt {
         editor.edit(this.viewer, draft.name, entry);
     }
 
-    private void confirm() {
-        drop();
+    /**
+     * The session is kept until the commit is through, since one stopped by a variable edited by
+     * hand still waits on a click. Every button printed so far goes quiet while it runs.
+     */
+    private void confirm(boolean anyway) {
+        this.refused = null;
+        this.publishing = true;
+        this.generation++;
+        save();
 
-        // Held back until now, so a cancelled session never leaves a jar marked private
-        DataConfiguration data = GitSyncPlugin.instance().dataConfiguration();
         List<GitSyncService.NewPlugin> answers = new ArrayList<>();
-        boolean ignoredAny = false;
         for (PluginDraft draft : this.plugins) {
             // Skipped jars leave no trace at all, so the next pushupdate asks about them again
-            if (skipped(draft)) {
-                continue;
-            }
-            if (!draft.ignored) {
+            if (!skipped(draft) && !draft.ignored) {
                 // The jar leads its own group, so its layer is the one anything else the plugin
                 // drags in falls back to
                 answers.add(new GitSyncService.NewPlugin(draft.jar, draft.wildcard, layerOf(draft),
                     List.copyOf(draft.configPaths), List.copyOf(draft.reloadCommands)));
-                continue;
             }
-            // The wildcard as it stands on the screen, not the one derived from the jar name
-            if (!data.ignoredPluginWildcards.contains(draft.wildcard)) {
-                data.ignoredPluginWildcards.add(draft.wildcard);
-                ignoredAny = true;
-            }
-        }
-        if (ignoredAny) {
-            data.save();
         }
 
         Map<String, String> fileLayers = new LinkedHashMap<>();
@@ -638,7 +677,33 @@ public class PushUpdatePrompt {
                 }
             }
         }
-        publisher.publish(this.viewer, this.message, this.confirmed, answers, fileLayers, skippedFiles);
+        publisher.publish(this.viewer, this.message, this.confirmed || anyway, answers, fileLayers, skippedFiles,
+            this::published);
+    }
+
+    /** Off the main thread, once the commit went through or was stopped. */
+    private void published(List<String> refused) {
+        this.publishing = false;
+        if (!refused.isEmpty()) {
+            this.refused = refused;
+            render();
+            return;
+        }
+        drop();
+
+        // Held back until now, so a cancelled session never leaves a jar marked private
+        DataConfiguration data = GitSyncPlugin.instance().dataConfiguration();
+        boolean ignoredAny = false;
+        for (PluginDraft draft : this.plugins) {
+            // The wildcard as it stands on the screen, not the one derived from the jar name
+            if (draft.ignored && !data.ignoredPluginWildcards.contains(draft.wildcard)) {
+                data.ignoredPluginWildcards.add(draft.wildcard);
+                ignoredAny = true;
+            }
+        }
+        if (ignoredAny) {
+            data.save();
+        }
     }
 
     private void header(int printed, String title) {

@@ -33,6 +33,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -61,6 +62,8 @@ public class GitSyncService {
     private final Supplier<PluginConfiguration> configSupplier;
     private final Supplier<ServerConfiguration> serverSupplier;
     private final GitSyncPlugin plugin;
+    /** The jar this server booted GitSync from, what a pack update of GitSync is compared with. */
+    private final Path ownJar;
 
     private final AtomicBoolean syncing = new AtomicBoolean();
     // Cleared by the restart itself, so it never needs to be persisted
@@ -79,18 +82,18 @@ public class GitSyncService {
     private volatile Map<String, Set<String>> unresolvedVariables = Map.of();
 
     /** Bootstrap phase, no server available. */
-    public GitSyncService(Path dataDirectory, Logger logger, Supplier<PluginConfiguration> configSupplier,
+    public GitSyncService(Path dataDirectory, Path ownJar, Logger logger, Supplier<PluginConfiguration> configSupplier,
                           Supplier<ServerConfiguration> serverSupplier) {
-        this(dataDirectory, logger, configSupplier, serverSupplier, null);
+        this(dataDirectory, ownJar, logger, configSupplier, serverSupplier, null);
     }
 
     /** Runtime, the server is up so reload commands and the periodic check can run. */
     public GitSyncService(GitSyncPlugin plugin) {
-        this(plugin.getDataFolder().toPath(), plugin.getLogger(), plugin::pluginConfiguration,
-                plugin::serverConfiguration, plugin);
+        this(plugin.getDataFolder().toPath(), plugin.getFile().toPath(), plugin.getLogger(),
+                plugin::pluginConfiguration, plugin::serverConfiguration, plugin);
     }
 
-    private GitSyncService(Path dataDirectory, Logger logger, Supplier<PluginConfiguration> configSupplier,
+    private GitSyncService(Path dataDirectory, Path ownJar, Logger logger, Supplier<PluginConfiguration> configSupplier,
                            Supplier<ServerConfiguration> serverSupplier, GitSyncPlugin plugin) {
         this.packDir = dataDirectory.resolve("pack");
         this.pluginsDir = dataDirectory.getParent();
@@ -99,6 +102,7 @@ public class GitSyncService {
         this.configSupplier = configSupplier;
         this.serverSupplier = serverSupplier;
         this.plugin = plugin;
+        this.ownJar = ownJar;
     }
 
     /** Open or create the repository. Returns false when GitSync cannot work at all. */
@@ -291,6 +295,7 @@ public class GitSyncService {
 
             Set<String> changed = new LinkedHashSet<>(render.changed());
             state.save(this.stateFile);
+            stageSelfUpdate(manifest, renderer, feedback);
 
             // A jar written by this render no longer matches the code the server loaded - either a
             // replaced jar or a brand new plugin the server has never loaded at all
@@ -328,7 +333,7 @@ public class GitSyncService {
                         + String.join(", ", jarChanged), NamedTextColor.YELLOW);
             }
             if (!this.restartReasons.isEmpty()) {
-                reply(feedback, "A server restart is required, run /gitsync status for the details.", NamedTextColor.YELLOW);
+                reply(feedback, "A server restart is required, run /gitsync info for the details.", NamedTextColor.YELLOW);
             }
 
             runReloadCommands(commands);
@@ -343,6 +348,42 @@ public class GitSyncService {
         }
     }
 
+    /**
+     * The pack carries a GitSync jar other than the one running. Writing it over the running jar
+     * breaks class loading (and Windows refuses it outright), so it goes into the server's update
+     * folder, which the server swaps in by file name on the next start.
+     */
+    private void stageSelfUpdate(PackManifest manifest, PackRenderer renderer, CommandSender feedback) throws IOException {
+        Path packed = renderer.selfJar(manifest);
+        if (packed == null || this.ownJar == null) {
+            return;
+        }
+        Path updateDir = this.plugin != null ? Bukkit.getUpdateFolderFile().toPath() : this.pluginsDir.resolve("update");
+        Path target = updateDir.resolve(this.ownJar.getFileName());
+        String packedHash = PackRenderer.hash(Files.readAllBytes(packed));
+        if (packedHash.equals(PackRenderer.hash(Files.readAllBytes(this.ownJar)))) {
+            // The pack went back to the running version, an update staged earlier must not load
+            if (Files.deleteIfExists(target)) {
+                this.restartReasons.remove(PackRenderer.SELF_NAME);
+            }
+            return;
+        }
+        // A broken jar here would take GitSync down on every server, with no sync left to fix it.
+        // A Git LFS pointer or a wrong file matching the wildcard is caught by this.
+        if (!PackRenderer.SELF_NAME.equals(descriptorName(packed))) {
+            this.logger.severe("The pack's GitSync jar " + packed.getFileName() + " is not a GitSync plugin, not updating.");
+            return;
+        }
+
+        if (!Files.isRegularFile(target) || !packedHash.equals(PackRenderer.hash(Files.readAllBytes(target)))) {
+            Files.createDirectories(updateDir);
+            Files.copy(packed, target, StandardCopyOption.REPLACE_EXISTING);
+            this.logger.info("Staged GitSync " + packed.getFileName() + " in " + target + ", it loads on the next start.");
+            reply(feedback, "A GitSync update was staged, it loads on the next start.", NamedTextColor.YELLOW);
+        }
+        this.restartReasons.put(PackRenderer.SELF_NAME, "update staged in " + updateDir.getFileName() + "/");
+    }
+
     /** Files declared by the pack that differ on this server from what the last sync rendered. */
     public List<PackRenderer.LocalChange> localChanges() throws IOException {
         return renderer().localChanges(readManifest(), PackRenderer.State.load(this.stateFile));
@@ -354,7 +395,13 @@ public class GitSyncService {
      * name for a jar carrying no descriptor this server can read.
      */
     public String pluginName(String jarName) {
-        try (JarFile jar = new JarFile(this.pluginsDir.resolve(jarName).toFile())) {
+        String name = descriptorName(this.pluginsDir.resolve(jarName));
+        return name != null ? name : PackRenderer.derivePluginName(jarName);
+    }
+
+    /** The name in the plugin descriptor of a jar, null when it is not a readable plugin jar. */
+    private String descriptorName(Path file) {
+        try (JarFile jar = new JarFile(file.toFile())) {
             for (String descriptor : List.of("plugin.yml", "paper-plugin.yml")) {
                 JarEntry entry = jar.getJarEntry(descriptor);
                 if (entry == null) {
@@ -365,9 +412,9 @@ public class GitSyncService {
                 }
             }
         } catch (Exception exception) {
-            this.logger.log(Level.FINE, "Could not read the plugin name out of " + jarName, exception);
+            this.logger.log(Level.FINE, "Could not read the plugin name out of " + file, exception);
         }
-        return PackRenderer.derivePluginName(jarName);
+        return null;
     }
 
     /** Jars in plugins/ that no pack entry claims and this server was not told to keep private. */

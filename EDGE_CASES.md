@@ -81,7 +81,7 @@ The first startup sync pulls jars the server did not boot with, so it stops the 
 
 ### The pack updates a plugin jar while the server is running
 
-The new jar is written and the old one (tracked under the same wildcard) removed, but the running server keeps the old version loaded. `/gitsync status` shows `Restart required: YES` with the jar named. No reload command can fix a jar - only a restart.
+The new jar is written and the old one (tracked under the same wildcard) removed, but the running server keeps the old version loaded. `/gitsync info` shows `Restart required: YES` with the jar named. No reload command can fix a jar - only a restart.
 
 ### A jar arrives during the startup sync
 

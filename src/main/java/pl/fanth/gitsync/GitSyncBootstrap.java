@@ -56,7 +56,7 @@ public class GitSyncBootstrap implements PluginBootstrap {
             data.save();
         }
 
-        GitSyncService service = new GitSyncService(dataDirectory, LOGGER, () -> config, () -> server);
+        GitSyncService service = new GitSyncService(dataDirectory, context.getPluginSource(), LOGGER, () -> config, () -> server);
         try {
             if (!service.open()) {
                 return;

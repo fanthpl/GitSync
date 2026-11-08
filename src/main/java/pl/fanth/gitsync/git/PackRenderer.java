@@ -38,6 +38,8 @@ public class PackRenderer {
     private static final Pattern VERSION_START = Pattern.compile("[-_]\\d");
     /** Our own data directory, a pack entry pointing in there would overwrite the pack itself. */
     private static final String OWN_DIRECTORY = "GitSync/";
+    /** The pack.json entry of GitSync itself, only its jar is ever synced. */
+    public static final String SELF_NAME = "GitSync";
     /** The prefix every one of our variables carries in a packed file. */
     public static final String VARIABLE_PREFIX = "GITSYNC_";
     /**
@@ -90,6 +92,32 @@ public class PackRenderer {
      * left out.
      */
     public Map<String, String> plan(PackManifest manifest) throws IOException {
+        Map<String, String> plan = fullPlan(manifest);
+        // Our own jar is never written over the running one, see selfJar()
+        plan.keySet().removeIf(logical -> isSelfJar(manifest, logical));
+        return plan;
+    }
+
+    /**
+     * Where the pack keeps the GitSync jar this server should run, null when the pack has none.
+     * It is left out of the plan: overwriting the jar of a running plugin breaks its class loading,
+     * so the caller drops it into the server's update folder instead.
+     */
+    public Path selfJar(PackManifest manifest) throws IOException {
+        for (Map.Entry<String, String> planned : fullPlan(manifest).entrySet()) {
+            if (isSelfJar(manifest, planned.getKey())) {
+                return this.packDir.resolve(planned.getValue()).resolve(planned.getKey());
+            }
+        }
+        return null;
+    }
+
+    private static boolean isSelfJar(PackManifest manifest, String logical) {
+        PackManifest.Entry self = manifest.plugins.get(SELF_NAME);
+        return self != null && self.matchesJar(logical);
+    }
+
+    private Map<String, String> fullPlan(PackManifest manifest) throws IOException {
         Map<String, String> plan = new LinkedHashMap<>();
         for (String layer : this.layers) {
             Path root = this.packDir.resolve(layer);
@@ -421,7 +449,8 @@ public class PackRenderer {
         try (Stream<Path> files = Files.list(this.pluginsDir)) {
             for (Path file : files.filter(Files::isRegularFile).toList()) {
                 String name = file.getFileName().toString();
-                if (manifest.plugins.values().stream().anyMatch(entry -> entry.matchesJar(name))) {
+                if (!isSelfJar(manifest, name)
+                        && manifest.plugins.values().stream().anyMatch(entry -> entry.matchesJar(name))) {
                     found.add(name);
                 }
             }

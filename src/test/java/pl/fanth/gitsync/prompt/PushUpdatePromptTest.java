@@ -29,6 +29,7 @@ class PushUpdatePromptTest {
               "tracked": [
                 {"logicalPath":"Thing/messages.yml","kind":"MODIFIED","targetLayer":"base"}
               ],
+              "refused": ["Thing/config.yml:3 host: lobby-1"],
               "index": 2,
               "page": 1,
               "generation": 7
