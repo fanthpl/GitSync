@@ -11,12 +11,14 @@ import org.bukkit.scheduler.BukkitTask;
 import org.eclipse.jgit.api.CheckoutCommand;
 import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.ListBranchCommand;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.RefNotAdvertisedException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.transport.CredentialsProvider;
@@ -42,6 +44,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -813,6 +816,59 @@ public class GitSyncService {
         // the Windows and Linux servers sharing this repository can never disagree about it.
         stored.setString("core", null, "autocrlf", "input");
         stored.save();
+    }
+
+    /**
+     * Switch the pack to another branch, or create it from the current one when neither this
+     * repository nor the remote has it. Written to config.yml, since every sync checks out the
+     * configured branch, then synced so plugins/ follows.
+     */
+    public synchronized void switchBranch(CommandSender sender, String branch) throws Exception {
+        if (!Repository.isValidRefName(Constants.R_HEADS + branch)) {
+            reply(sender, branch + " is not a valid branch name.", NamedTextColor.RED);
+            return;
+        }
+        PluginConfiguration config = this.configSupplier.get();
+        String previous = config.branch;
+        if (branch.equals(this.git.getRepository().getBranch())) {
+            reply(sender, "Already on " + branch + ".", NamedTextColor.YELLOW);
+            return;
+        }
+
+        config.branch = branch;
+        try {
+            checkoutConfiguredBranch(config);
+        } catch (Exception exception) {
+            config.branch = previous;
+            throw exception;
+        }
+        config.save();
+
+        if (this.git.getRepository().resolve(Constants.R_REMOTES + REMOTE + "/" + branch) == null) {
+            reply(sender, "Created branch " + branch + " from " + previous
+                    + ", the next pushupdate publishes it.", NamedTextColor.GREEN);
+            return;
+        }
+        reply(sender, "Switched to " + branch + ", syncing...", NamedTextColor.GREEN);
+        sync(sender, false);
+    }
+
+    /** Local and remote branch names, for tab completion. */
+    public Set<String> branches() {
+        Set<String> names = new TreeSet<>();
+        if (this.git == null) {
+            return names;
+        }
+        try {
+            for (Ref ref : this.git.branchList().setListMode(ListBranchCommand.ListMode.ALL).call()) {
+                String name = Repository.shortenRefName(ref.getName());
+                names.add(name.startsWith(REMOTE + "/") ? name.substring(REMOTE.length() + 1) : name);
+            }
+        } catch (Exception exception) {
+            this.logger.log(Level.FINE, "Could not list the branches", exception);
+        }
+        names.remove("HEAD");
+        return names;
     }
 
     /**

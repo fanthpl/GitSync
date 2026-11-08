@@ -96,6 +96,21 @@ public class GitSyncCommand extends BaseCommand {
         Bukkit.getScheduler().runTaskAsynchronously(GitSyncPlugin.instance(), () -> service.sync(sender, force));
     }
 
+    @Subcommand("checkout")
+    @Description("Switch the pack to a branch, creating it from the current one when it does not exist")
+    @Syntax("<branch>")
+    @CommandCompletion("@branches")
+    public void checkout(CommandSender sender, String branch) {
+        GitSyncService service = GitSyncPlugin.instance().gitSyncService();
+        if (service.isSyncing()) {
+            send(sender, "A sync is already in progress!", NamedTextColor.RED);
+            return;
+        }
+
+        send(sender, "Checking out " + branch + "...", NamedTextColor.GREEN);
+        runAsync(sender, "checking out " + branch, git -> service.switchBranch(sender, branch));
+    }
+
     @Subcommand("reload")
     @Description("Reload the plugin configuration")
     public void reload(CommandSender sender) {
