@@ -22,6 +22,7 @@ public class DataConfiguration extends OkaeriConfig {
     public boolean forceNextStartupSync = false;
 
     @Comment("")
-    @Comment("Edited files left out of /git pushupdate, toggled with [+] and [-] in /git status.")
-    public List<String> unstagedPaths = new ArrayList<>();
+    @Comment("Edited files that go into the next /git pushupdate, toggled with [+] and [-] in /git status.")
+    @Comment("Everything else is unstaged, a successful push clears the files it published.")
+    public List<String> stagedPaths = new ArrayList<>();
 }

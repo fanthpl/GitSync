@@ -422,16 +422,16 @@ public class GitSyncService {
         return null;
     }
 
-    /** Logical paths left out of the next push, everything else that drifted is staged. */
-    public synchronized Set<String> unstaged() {
-        return this.plugin == null ? Set.of() : new LinkedHashSet<>(this.plugin.dataConfiguration().unstagedPaths);
+    /** Logical paths that go into the next push, everything else that drifted is unstaged like in git. */
+    public synchronized Set<String> staged() {
+        return this.plugin == null ? Set.of() : new LinkedHashSet<>(this.plugin.dataConfiguration().stagedPaths);
     }
 
     public synchronized void setStaged(Collection<String> paths, boolean staged) {
         DataConfiguration data = this.plugin.dataConfiguration();
-        data.unstagedPaths.removeAll(paths);
-        if (!staged) {
-            data.unstagedPaths.addAll(paths);
+        data.stagedPaths.removeAll(paths);
+        if (staged) {
+            data.stagedPaths.addAll(paths);
         }
         data.save();
     }
@@ -488,8 +488,8 @@ public class GitSyncService {
 
         List<PackRenderer.LocalChange> changes = new ArrayList<>(renderer.localChanges(manifest, state));
         // Nothing is staged and nothing goes into the state for these, so they turn up as new again
-        Set<String> unstaged = unstaged();
-        changes.removeIf(change -> skipped.contains(change.logicalPath()) || unstaged.contains(change.logicalPath()));
+        Set<String> staged = staged();
+        changes.removeIf(change -> skipped.contains(change.logicalPath()) || !staged.contains(change.logicalPath()));
         changes.replaceAll(change -> retarget(change, manifest, addedLayers, fileLayers));
 
         // Worked out before anything is written, so a refusal leaves the pack untouched
@@ -537,6 +537,10 @@ public class GitSyncService {
             }
         }
         state.save(this.stateFile);
+        // Like a git commit emptying the index, the next edit of these files starts unstaged
+        if (this.plugin != null) {
+            setStaged(changes.stream().map(PackRenderer.LocalChange::logicalPath).toList(), false);
+        }
         reply(sender, "Successfully pushed! " + changes.size() + " local change(s) are now in the pack.", NamedTextColor.GREEN);
         if (!newPlugins.isEmpty()) {
             reply(sender, newPlugins.size() + " new plugin(s) are now part of the pack.", NamedTextColor.GREEN);

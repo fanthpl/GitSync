@@ -202,7 +202,7 @@ public class GitSyncCommand extends BaseCommand {
                 return;
             }
 
-            Set<String> unstaged = service.unstaged();
+            Set<String> stagedPaths = service.staged();
             List<Component> lines = new ArrayList<>();
             if (packEdited) {
                 lines.add(Component.text("[M] ").color(NamedTextColor.YELLOW)
@@ -212,7 +212,7 @@ public class GitSyncCommand extends BaseCommand {
             for (PackRenderer.LocalChange change : changes) {
                 String path = change.logicalPath();
                 // The toggles carry their own click, the rest of the line shows the diff
-                lines.add(StatusLines.line(change.kind(), path, change.targetLayer(), !unstaged.contains(path),
+                lines.add(StatusLines.line(change.kind(), path, change.targetLayer(), stagedPaths.contains(path),
                         audience -> restage(sender, List.of(path), true, page),
                         audience -> restage(sender, List.of(path), false, page))
                     .hoverEvent(HoverEvent.showText(Component.text("Show what differs from the pack")))
@@ -227,7 +227,7 @@ public class GitSyncCommand extends BaseCommand {
 
             int pages = (lines.size() + STATUS_PAGE_SIZE - 1) / STATUS_PAGE_SIZE;
             int current = Math.max(1, Math.min(page, pages));
-            long staged = changes.stream().filter(change -> !unstaged.contains(change.logicalPath())).count();
+            long staged = changes.stream().filter(change -> stagedPaths.contains(change.logicalPath())).count();
             send(sender, "--- Local edits (" + lines.size() + ", " + staged + " staged) ---", NamedTextColor.GOLD);
             if (!changes.isEmpty()) {
                 List<String> paths = changes.stream().map(PackRenderer.LocalChange::logicalPath).toList();

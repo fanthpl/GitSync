@@ -579,9 +579,9 @@ public class PushUpdatePrompt {
                 kinds.add(change.kind());
             }
             List<String> paths = files.stream().map(file -> file[0]).toList();
-            Set<String> unstaged = service().unstaged();
+            Set<String> staged = service().staged();
 
-            say("Files (" + paths.stream().filter(path -> !unstaged.contains(path)).count() + " of "
+            say("Files (" + paths.stream().filter(staged::contains).count() + " of "
                 + paths.size() + " staged):", NamedTextColor.GRAY);
             this.viewer.sendMessage(StatusLines.allRow(restage(printed, paths, true), restage(printed, paths, false)));
             // A plugin bringing thousands of files would otherwise bury the confirm button
@@ -592,7 +592,7 @@ public class PushUpdatePrompt {
             for (int i = from; i < to; i++) {
                 String path = files.get(i)[0];
                 this.viewer.sendMessage(Component.text("  ").append(StatusLines.line(kinds.get(i), path,
-                    files.get(i)[1], !unstaged.contains(path),
+                    files.get(i)[1], staged.contains(path),
                     restage(printed, List.of(path), true), restage(printed, List.of(path), false))));
             }
             if (pages > 1) {
