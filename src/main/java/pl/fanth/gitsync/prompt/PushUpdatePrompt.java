@@ -42,7 +42,7 @@ import java.util.logging.Level;
  *       had. Guessing at the role layer would quietly hand a file meant for this server to every
  *       server of the same kind, so each screen settles its plugin in one click or its files one
  *       by one;</li>
- *   <li>the summary, which lists every file the push touches, the way /gitsync git status does.</li>
+ *   <li>the summary, which lists every file the push touches, the way /gitsync status does.</li>
  * </ol>
  * A file that only drifted needs no question at all: it goes back into the layer it was rendered
  * from.
@@ -565,7 +565,7 @@ public class PushUpdatePrompt {
         if (groups.isEmpty() && this.tracked.isEmpty()) {
             say("No file on this server differs from the pack.", NamedTextColor.GRAY);
         } else {
-            // The same lines /gitsync git status prints, toggled the same way
+            // The same lines /gitsync status prints, toggled the same way
             List<String[]> files = new ArrayList<>();
             List<PackRenderer.Kind> kinds = new ArrayList<>();
             for (FileGroup group : groups) {
@@ -643,7 +643,7 @@ public class PushUpdatePrompt {
             .append(cancelButton(printed)));
     }
 
-    /** The same staging /gitsync git status toggles, so an unstaged file stays out of the push. */
+    /** The same staging /gitsync status toggles, so an unstaged file stays out of the push. */
     private ClickCallback<Audience> restage(int printed, List<String> paths, boolean staged) {
         return audience -> click(audience, printed, () -> {
             service().setStaged(paths, staged);

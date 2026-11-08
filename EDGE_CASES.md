@@ -125,7 +125,7 @@ Ignored. The pack cannot overwrite GitSync's own config, state, or the repositor
 
 ### Two servers push at (nearly) the same time
 
-The second push is rejected as non-fast-forward. JGit does not throw for this - GitSync reads the per-ref status, reports "Push rejected", and tells you to `/gitsync sync` first (which pulls the other server's commit), then push again. The commit already exists locally; `/gitsync git showahead` lists it.
+The second push is rejected as non-fast-forward. JGit does not throw for this - GitSync reads the per-ref status, reports "Push rejected", and tells you to `/gitsync sync` first (which pulls the other server's commit), then push again. The commit already exists locally; `/gitsync showahead` lists it.
 
 ### The pull hits a merge conflict
 
@@ -149,7 +149,7 @@ After `/gitsync reload` (or a restart) and a sync, the plan is rebuilt from the 
 
 Environment variables are read when `server.yml` is loaded, from the JVM's environment - which is fixed at process start. A changed egg variable on Pterodactyl needs a server restart, not just `/gitsync reload`.
 
-### `/gitsync git resethead` and files outside the pack
+### `/gitsync resethead` and files outside the pack
 
 Safe. It hard-resets the pack repository and re-renders **declared paths only**. Configs and plugins not in `pack.json` are never touched, same as during a normal sync.
 
@@ -159,7 +159,7 @@ A one-shot flag: the next startup sync runs as `--force`, discarding local edits
 
 ### A `pushupdate` dies halfway (crash, push failure)
 
-Staged copies can be left inside the pack repository, but `plugins/` and the state are untouched - the state is only updated after a successful push. `/gitsync git resethead` cleans the repo up (it runs `git clean` + `reset --hard` first).
+Staged copies can be left inside the pack repository, but `plugins/` and the state are untouched - the state is only updated after a successful push. `/gitsync resethead` cleans the repo up (it runs `git clean` + `reset --hard` first).
 
 ### Windows and Linux servers share one repo
 
