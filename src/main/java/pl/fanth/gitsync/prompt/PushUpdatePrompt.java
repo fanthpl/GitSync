@@ -411,9 +411,18 @@ public class PushUpdatePrompt {
                 .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                     draft.submitted = true;
                     draft.ignored = false;
+                    draft.skipped = false;
                     advance();
                 }))))
             .append(Component.space()).append(ignoreButton(draft, printed))
+            .append(Component.space()).append(button("[skip]", NamedTextColor.DARK_GRAY,
+                    "Leave " + draft.name + " out of this push - nothing is remembered, the next pushupdate asks again")
+                .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
+                    draft.skipped = true;
+                    draft.submitted = false;
+                    draft.ignored = false;
+                    advance();
+                }))))
             .append(Component.space()).append(cancelButton(printed)));
     }
 
@@ -850,6 +859,7 @@ public class PushUpdatePrompt {
             .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
                 draft.ignored = true;
                 draft.submitted = false;
+                draft.skipped = false;
                 advance();
             })));
     }
@@ -919,7 +929,7 @@ public class PushUpdatePrompt {
 
     /** A submitted jar left out of this push - its own file screen leads with the jar itself. */
     private boolean skipped(PluginDraft plugin) {
-        return this.pluginGroups.stream()
+        return plugin.skipped || this.pluginGroups.stream()
             .filter(group -> group.owner.equals(plugin.name))
             .anyMatch(group -> group.drafts.get(0).skipped);
     }
@@ -982,6 +992,8 @@ public class PushUpdatePrompt {
         private boolean submitted;
         /** Answered by keeping the jar to this server instead of putting it in the pack. */
         private boolean ignored;
+        /** Left out of this push only, the next pushupdate asks about it again. */
+        private boolean skipped;
 
         private PluginDraft(String jar, String name, String wildcard) {
             this.jar = jar;
@@ -990,7 +1002,7 @@ public class PushUpdatePrompt {
         }
 
         private boolean answered() {
-            return this.submitted || this.ignored;
+            return this.submitted || this.ignored || this.skipped;
         }
     }
 
