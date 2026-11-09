@@ -384,6 +384,16 @@ public class GitSyncCommand extends BaseCommand {
         publish(sender, cleaned, confirmed);
     }
 
+    @Subcommand("populatevariables")
+    @Description("Fill in the GITSYNC_ variables typed into a file or folder now, the next pushupdate publishes them as typed")
+    @Syntax("<path>")
+    @CommandCompletion("@pluginfiles")
+    public void populateVariables(CommandSender sender, String path) {
+        send(sender, "Filling in variables...", NamedTextColor.GREEN);
+        runAsync(sender, "filling in variables", git ->
+                GitSyncPlugin.instance().gitSyncService().populate(sender, path));
+    }
+
     @Subcommand("pack edit")
     @Description("Edit a plugin the pack already has: its wildcard, config paths and reload commands")
     @Syntax("<plugin>")

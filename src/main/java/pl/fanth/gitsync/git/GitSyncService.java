@@ -282,7 +282,8 @@ public class GitSyncService {
             if (!render.unresolved().isEmpty()) {
                 // Nothing was written, the pack asks for values this server does not have
                 this.lastSyncFailed = true;
-                reportMissingVariables(feedback, render.unresolved());
+                reportMissingVariables(feedback, "Nothing was synced. server.yml is missing "
+                        + render.unresolved().size() + " variable(s):", render.unresolved());
                 return Set.of();
             }
 
@@ -526,6 +527,9 @@ public class GitSyncService {
             }
         }
         state.save(this.stateFile);
+        for (PackRenderer.LocalChange change : changes) {
+            renderer.dropTemplate(change.logicalPath());
+        }
         // Like a git commit emptying the index, the next edit of these files starts unstaged
         if (this.plugin != null) {
             setStaged(changes.stream().map(PackRenderer.LocalChange::logicalPath).toList(), false);
@@ -586,6 +590,50 @@ public class GitSyncService {
      */
     public record NewPlugin(String jar, String wildcard, String layer,
                             List<String> configPaths, List<String> reloadCommands) {
+    }
+
+    /**
+     * Fill in the variables typed into a file or folder under plugins/ right away, typically for a
+     * plugin the pack does not have yet. The next pushupdate publishes the placeholders as typed.
+     */
+    public synchronized void populate(CommandSender sender, String path) throws IOException {
+        PackRenderer renderer = renderer();
+        PackRenderer.State state = PackRenderer.State.load(this.stateFile);
+        List<String> files = renderer.filesUnder(List.of(path));
+        if (files.isEmpty()) {
+            reply(sender, "Nothing found at plugins/" + path + ".", NamedTextColor.RED);
+            return;
+        }
+
+        int populated = 0;
+        Map<String, Set<String>> missing = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+        for (String logical : files) {
+            PackRenderer.State.Entry tracked = state.files.get(logical);
+            PackRenderer.Population population =
+                    renderer.populate(logical, tracked != null ? tracked.layer : renderer.defaultLayer());
+            if (population.changed()) {
+                populated++;
+            }
+            population.missing().forEach(name -> missing.computeIfAbsent(name, key -> new LinkedHashSet<>()).add(logical));
+            warnings.addAll(population.warnings());
+        }
+
+        if (!missing.isEmpty()) {
+            reportMissingVariables(sender, "These files were left as they are, server.yml is missing "
+                    + missing.size() + " variable(s):", missing);
+        }
+        if (!warnings.isEmpty()) {
+            reply(sender, warnings.size() + " line(s) filled in earlier were edited by hand, their files were left as they are:",
+                    NamedTextColor.RED);
+            warnings.forEach(warning -> reply(sender, "  " + warning, NamedTextColor.DARK_RED));
+        }
+        if (populated == 0) {
+            reply(sender, "No variables to fill in.", NamedTextColor.YELLOW);
+            return;
+        }
+        reply(sender, "Filled in the variables in " + populated + " file(s), reload the plugins owning them to pick them up.",
+                NamedTextColor.GREEN);
     }
 
     /** Throw away the local edits: render the pack over them again, from what is already pulled. */
@@ -740,13 +788,13 @@ public class GitSyncService {
                 + String.join(", ", files) + " but server.yml does not set it."));
     }
 
-    /** The sync stopped before writing anything, because the pack needs values server.yml does not set. */
-    private void reportMissingVariables(CommandSender sender, Map<String, Set<String>> unresolved) {
-        reply(sender, "Nothing was synced. server.yml is missing " + unresolved.size() + " variable(s):", NamedTextColor.RED);
+    /** Nothing was written, because the files need values server.yml does not set. */
+    private void reportMissingVariables(CommandSender sender, String headline, Map<String, Set<String>> unresolved) {
+        reply(sender, headline, NamedTextColor.RED);
         unresolved.forEach((name, files) -> reply(sender, "  " + PackRenderer.VARIABLE_PREFIX + name
                 + " - used by " + String.join(", ", files), NamedTextColor.DARK_RED));
         reply(sender, "Add them under variables: in server.yml (without the "
-                + PackRenderer.VARIABLE_PREFIX + " prefix) and sync again.", NamedTextColor.YELLOW);
+                + PackRenderer.VARIABLE_PREFIX + " prefix), /git reload and try again.", NamedTextColor.YELLOW);
     }
 
     /**

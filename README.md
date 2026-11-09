@@ -146,6 +146,7 @@ Configs are meant to be tweaked in place. Do it, then publish:
 | --- | --- |
 | `/git status` | Which synced files were edited here, and which layer each one would go back to. |
 | `/git pushupdate <message> [--confirm]` | Copy those edits back into the layer each file came from, variables restored, then commit and push. A file created here goes to the role layer; a file deleted here is dropped from its layer, which re-exposes the copy below it. `--confirm` publishes variable lines that were edited by hand. |
+| `/git populatevariables <path>` | Fill in the `${GITSYNC_...}` typed into a file or folder under `plugins/` right away, e.g. for a plugin the pack does not have yet. The next pushupdate publishes the placeholders, not the values. |
 | `/git showahead` | Commits that exist locally but not on the remote. |
 | `/git resethead` | Throw away the local edits and render the pack over them again. |
 

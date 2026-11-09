@@ -15,6 +15,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -49,6 +50,11 @@ public class PackRenderer {
      */
     private static final Pattern VARIABLE =
             Pattern.compile("\\$\\{" + VARIABLE_PREFIX + "([A-Za-z0-9_.-]+)(?::([^}]*))?}");
+    /**
+     * The comment a rendered YAML line gets when its whole value came from a variable. No ${...}
+     * around the name, so nothing ever renders the comment itself.
+     */
+    private static final Pattern MARKER_COMMENT = Pattern.compile(" # " + VARIABLE_PREFIX + "[A-Za-z0-9_.-]+\\s*$");
 
     private final Path packDir;
     private final Path pluginsDir;
@@ -233,6 +239,8 @@ public class PackRenderer {
             Path target = target(write.getKey());
             Files.createDirectories(target.getParent());
             Files.write(target, write.getValue());
+            // The pack speaks for this file now, a form kept by populate is out of date
+            dropTemplate(write.getKey());
             state.files.put(write.getKey(), new State.Entry(writeLayers.get(write.getKey()), hash(write.getValue())));
             changed.add(write.getKey());
         }
@@ -335,7 +343,11 @@ public class PackRenderer {
      * would hand this server's value to everyone rendering that file.
      */
     public Reversal reverse(String logical, String layer) throws IOException {
-        Path templateFile = this.packDir.resolve(layer).resolve(logical);
+        // What populate kept knows the placeholders typed on this server, which the pack has not seen yet
+        Path templateFile = storedTemplate(logical);
+        if (!Files.isRegularFile(templateFile)) {
+            templateFile = this.packDir.resolve(layer).resolve(logical);
+        }
         // Nothing to put back for a file the pack has never seen. A server without declared
         // variables still renders ${GITSYNC_NAME:default} placeholders, so it walks the template too.
         if (!Files.isRegularFile(templateFile)) {
@@ -354,7 +366,8 @@ public class PackRenderer {
             // Two template lines rendering the same way render the same way on every server, so
             // either of them puts the file back together correctly
             if (!rendered.equals(line)) {
-                templates.putIfAbsent(rendered, line);
+                // Keyed without the marker comment, so a plugin dropping comments on save still matches
+                templates.putIfAbsent(withoutMarker(rendered, yaml), line);
             }
         }
         // No variable reaches this file, so the live copy belongs in the pack as it is. Checked
@@ -371,9 +384,10 @@ public class PackRenderer {
         Set<String> matched = new LinkedHashSet<>();
         List<String> out = new ArrayList<>();
         for (String line : lines(live)) {
-            String original = templates.get(line);
+            String key = withoutMarker(line, yaml);
+            String original = templates.get(key);
             if (original != null) {
-                matched.add(line);
+                matched.add(key);
             }
             out.add(original != null ? original : line);
         }
@@ -385,6 +399,54 @@ public class PackRenderer {
             }
         });
         return new Reversal(String.join("\n", out).getBytes(StandardCharsets.UTF_8), warnings);
+    }
+
+    /**
+     * Fill in the ${GITSYNC_NAME} typed straight into a file on this server, without waiting for it
+     * to go through the pack. The typed form is kept aside, which is what reverse reads at the next
+     * push, so the pack gets the placeholders and never this server's values. Placeholders filled
+     * in earlier are put back first, so running it again after typing more keeps them all.
+     * <p>
+     * Nothing is written when a name has no value here, or when a line filled in earlier was edited
+     * by hand - the kept form would hold this server's value then.
+     *
+     * @param layer where the file came from, for a file the pack already has
+     */
+    public Population populate(String logical, String layer) throws IOException {
+        byte[] live = Files.readAllBytes(target(logical));
+        if (RawText.isBinary(live)) {
+            return Population.NOTHING;
+        }
+        Reversal reversal = reverse(logical, layer);
+        if (!reversal.warnings().isEmpty()) {
+            return new Population(false, Set.of(), reversal.warnings());
+        }
+
+        byte[] template = reversal.bytes() == null ? live : reversal.bytes();
+        Set<String> missing = new LinkedHashSet<>();
+        byte[] rendered = replaceVariables(template, missing, isYaml(logical));
+        if (!missing.isEmpty()) {
+            return new Population(false, missing, List.of());
+        }
+        if (Arrays.equals(rendered, live)) {
+            return Population.NOTHING;
+        }
+
+        Path stored = storedTemplate(logical);
+        Files.createDirectories(stored.getParent());
+        Files.write(stored, template);
+        Files.write(target(logical), rendered);
+        return new Population(true, Set.of(), List.of());
+    }
+
+    /** Forget the form populate kept, once the pack holds the file. */
+    public void dropTemplate(String logical) throws IOException {
+        Files.deleteIfExists(storedTemplate(logical));
+    }
+
+    /** Next to the pack, inside our own data directory, so no render or push ever picks it up. */
+    private Path storedTemplate(String logical) {
+        return this.packDir.resolveSibling("templates").resolve(logical);
     }
 
     /** Copy a file from plugins/ into the given layer of the pack. */
@@ -517,12 +579,20 @@ public class PackRenderer {
                 }
                 // Left as it stands, and never rescanned, so a value holding ${...} stays literal
                 value = matcher.group();
-            } else if (yaml && needsYamlQuoting(value) && isWholeYamlValue(text, matcher.start(), matcher.end())) {
-                value = "'" + value.replace("'", "''") + "'";
+            } else if (yaml && isWholeYamlValue(text, matcher.start(), matcher.end())) {
+                if (needsYamlQuoting(value)) {
+                    value = "'" + value.replace("'", "''") + "'";
+                }
+                // Says in the file itself that this value belongs to server.yml, not to the pack
+                value += " # " + VARIABLE_PREFIX + matcher.group(1);
             }
             matcher.appendReplacement(out, Matcher.quoteReplacement(value));
         }
         return matcher.appendTail(out).toString();
+    }
+
+    private static String withoutMarker(String line, boolean yaml) {
+        return yaml ? MARKER_COMMENT.matcher(line).replaceFirst("") : line;
     }
 
     private static boolean isYaml(String logical) {
@@ -638,6 +708,15 @@ public class PackRenderer {
      */
     public record Reversal(byte[] bytes, List<String> warnings) {
         public static final Reversal NONE = new Reversal(null, List.of());
+    }
+
+    /**
+     * @param changed  the file was rewritten with the values filled in
+     * @param missing  names typed into the file that this server has no value for
+     * @param warnings lines filled in earlier that were edited by hand since
+     */
+    public record Population(boolean changed, Set<String> missing, List<String> warnings) {
+        public static final Population NOTHING = new Population(false, Set.of(), List.of());
     }
 
     /**
