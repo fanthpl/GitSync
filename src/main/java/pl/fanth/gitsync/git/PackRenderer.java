@@ -50,12 +50,6 @@ public class PackRenderer {
      */
     private static final Pattern VARIABLE =
             Pattern.compile("\\$\\{" + VARIABLE_PREFIX + "([A-Za-z0-9_.-]+)(?::([^}]*))?}");
-    /**
-     * The comment a rendered YAML line gets when its whole value came from a variable. No ${...}
-     * around the name, so nothing ever renders the comment itself.
-     */
-    private static final Pattern MARKER_COMMENT = Pattern.compile(" # " + VARIABLE_PREFIX + "[A-Za-z0-9_.-]+\\s*$");
-
     private final Path packDir;
     private final Path pluginsDir;
     /** Lowest priority first. */
@@ -366,8 +360,7 @@ public class PackRenderer {
             // Two template lines rendering the same way render the same way on every server, so
             // either of them puts the file back together correctly
             if (!rendered.equals(line)) {
-                // Keyed without the marker comment, so a plugin dropping comments on save still matches
-                templates.putIfAbsent(withoutMarker(rendered, yaml), line);
+                templates.putIfAbsent(rendered, line);
             }
         }
         // No variable reaches this file, so the live copy belongs in the pack as it is. Checked
@@ -384,10 +377,9 @@ public class PackRenderer {
         Set<String> matched = new LinkedHashSet<>();
         List<String> out = new ArrayList<>();
         for (String line : lines(live)) {
-            String key = withoutMarker(line, yaml);
-            String original = templates.get(key);
+            String original = templates.get(line);
             if (original != null) {
-                matched.add(key);
+                matched.add(line);
             }
             out.add(original != null ? original : line);
         }
@@ -579,20 +571,12 @@ public class PackRenderer {
                 }
                 // Left as it stands, and never rescanned, so a value holding ${...} stays literal
                 value = matcher.group();
-            } else if (yaml && isWholeYamlValue(text, matcher.start(), matcher.end())) {
-                if (needsYamlQuoting(value)) {
-                    value = "'" + value.replace("'", "''") + "'";
-                }
-                // Says in the file itself that this value belongs to server.yml, not to the pack
-                value += " # " + VARIABLE_PREFIX + matcher.group(1);
+            } else if (yaml && needsYamlQuoting(value) && isWholeYamlValue(text, matcher.start(), matcher.end())) {
+                value = "'" + value.replace("'", "''") + "'";
             }
             matcher.appendReplacement(out, Matcher.quoteReplacement(value));
         }
         return matcher.appendTail(out).toString();
-    }
-
-    private static String withoutMarker(String line, boolean yaml) {
-        return yaml ? MARKER_COMMENT.matcher(line).replaceFirst("") : line;
     }
 
     private static boolean isYaml(String logical) {

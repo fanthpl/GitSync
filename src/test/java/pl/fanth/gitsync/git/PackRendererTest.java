@@ -251,7 +251,7 @@ class PackRendererTest {
         PackRenderer.Render render = renderer.apply(renderer.plan(PACK), state, false);
 
         // Without the prefix it belongs to whatever plugin owns the file, so it is left as it is
-        assertEquals("serverName: lobby-1 # GITSYNC_SERVER_NAME\nother: ${SERVER_NAME}\n", localContent("Essentials/config.yml"));
+        assertEquals("serverName: lobby-1\nother: ${SERVER_NAME}\n", localContent("Essentials/config.yml"));
         assertTrue(render.unresolved().isEmpty());
 
         // The rendered form is what the state remembers, so the next sync sees no drift at all
@@ -268,7 +268,7 @@ class PackRendererTest {
         PackRenderer.Render render = renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
 
         // The declared value wins over the default; the undeclared one falls back and is not missing
-        assertEquals("port: 25599 # GITSYNC_PORT\nmotd: hello # GITSYNC_MOTD\n", localContent("Essentials/config.yml"));
+        assertEquals("port: 25599\nmotd: hello\n", localContent("Essentials/config.yml"));
         assertTrue(render.unresolved().isEmpty());
     }
 
@@ -351,13 +351,13 @@ class PackRendererTest {
         renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
 
         assertEquals("""
-                motd: 'hello: world #wave' # GITSYNC_MOTD
-                port: 3306 # GITSYNC_PORT
-                token: '''tis a token' # GITSYNC_TOKEN
+                motd: 'hello: world #wave'
+                port: 3306
+                token: '''tis a token'
                 quoted: "hello: world #wave"
                 inside: pre-hello: world #wave
                 list:
-                  - '&7[lobby]' # GITSYNC_PREFIX
+                  - '&7[lobby]'
                 """, localContent("Essentials/config.yml"),
                 "only a whole, unquoted value is wrapped; a number stays a number");
 
@@ -410,14 +410,14 @@ class PackRendererTest {
 
         PackRenderer.State state = new PackRenderer.State();
         renderer.apply(renderer.plan(PACK), state, false);
-        assertEquals("serverName: lobby-1 # GITSYNC_SERVER_NAME\n", localContent("Essentials/config.yml"));
+        assertEquals("serverName: lobby-1\n", localContent("Essentials/config.yml"));
 
         PackRenderer renamed = renderer("", "", Map.of("SERVER_NAME", "lobby-2"));
         PackRenderer.Render render = renamed.apply(renamed.plan(PACK), state, false);
 
         assertTrue(render.conflicts().isEmpty(), "the file was never edited here, only the value changed");
         assertEquals(Set.of("Essentials/config.yml"), render.changed());
-        assertEquals("serverName: lobby-2 # GITSYNC_SERVER_NAME\n", localContent("Essentials/config.yml"));
+        assertEquals("serverName: lobby-2\n", localContent("Essentials/config.yml"));
     }
 
     @Test
@@ -472,12 +472,12 @@ class PackRendererTest {
         local("Essentials/config.yml", "password: ${GITSYNC_DB_PASS}\nmotd: hello\n");
 
         assertTrue(renderer.populate("Essentials/config.yml", "base").changed());
-        assertEquals("password: hunter2 # GITSYNC_DB_PASS\nmotd: hello\n", localContent("Essentials/config.yml"));
+        assertEquals("password: hunter2\nmotd: hello\n", localContent("Essentials/config.yml"));
 
         // Another one typed later, the first one filled in already must survive it
-        local("Essentials/config.yml", "password: hunter2 # GITSYNC_DB_PASS\nmotd: ${GITSYNC_MOTD:hi}\n");
+        local("Essentials/config.yml", "password: hunter2\nmotd: ${GITSYNC_MOTD:hi}\n");
         assertTrue(renderer.populate("Essentials/config.yml", "base").changed());
-        assertEquals("password: hunter2 # GITSYNC_DB_PASS\nmotd: hi # GITSYNC_MOTD\n", localContent("Essentials/config.yml"));
+        assertEquals("password: hunter2\nmotd: hi\n", localContent("Essentials/config.yml"));
 
         renderer.stage("Essentials/config.yml", "base", renderer.reverse("Essentials/config.yml", "base"));
         assertEquals("password: ${GITSYNC_DB_PASS}\nmotd: ${GITSYNC_MOTD:hi}\n", packedContent("base/Essentials/config.yml"));
@@ -493,20 +493,6 @@ class PackRendererTest {
         assertFalse(population.changed());
         assertEquals(Set.of("DB_PASS"), population.missing());
         assertEquals("password: ${GITSYNC_DB_PASS}\n", localContent("Essentials/config.yml"));
-    }
-
-    /** The marker comment is only a hint, a plugin saving its config without it still publishes the placeholder. */
-    @Test
-    void aLineWithOrWithoutTheMarkerCommentGoesBack() throws Exception {
-        PackRenderer renderer = renderer("", "", Map.of("A", "1", "B", "2"));
-        packed("base/Essentials/config.yml", "a: ${GITSYNC_A}\nb: ${GITSYNC_B}\n");
-        renderer.apply(renderer.plan(PACK), new PackRenderer.State(), false);
-
-        local("Essentials/config.yml", "a: 1 # GITSYNC_A\nb: 2\n");
-        PackRenderer.Reversal reversal = renderer.reverse("Essentials/config.yml", "base");
-
-        assertTrue(reversal.warnings().isEmpty());
-        assertEquals("a: ${GITSYNC_A}\nb: ${GITSYNC_B}\n", new String(reversal.bytes(), StandardCharsets.UTF_8));
     }
 
     private void packed(String path, String content) throws IOException {
