@@ -414,7 +414,6 @@ public class PushUpdatePrompt {
                     draft.skipped = false;
                     advance();
                 }))))
-            .append(Component.space()).append(ignoreButton(draft, printed))
             .append(Component.space()).append(button("[skip]", NamedTextColor.DARK_GRAY,
                     "Leave " + draft.name + " out of this push - nothing is remembered, the next pushupdate asks again")
                 .clickEvent(ClickEvent.callback(audience -> click(audience, printed, () -> {
@@ -423,6 +422,7 @@ public class PushUpdatePrompt {
                     draft.ignored = false;
                     advance();
                 }))))
+            .append(Component.space()).append(ignoreButton(draft, printed))
             .append(Component.space()).append(cancelButton(printed)));
     }
 
