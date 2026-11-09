@@ -12,13 +12,23 @@ import org.bukkit.plugin.java.JavaPlugin;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.listeners.PlayerListener;
 
+import com.google.gson.JsonParser;
+
 import java.io.File;
+import java.lang.module.ModuleDescriptor;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 public final class GitSyncPlugin extends JavaPlugin {
     private PluginConfiguration pluginConfiguration;
     private ServerConfiguration serverConfiguration;
     private DataConfiguration dataConfiguration;
     private GitSyncService gitSyncService;
+
+    /** Newer release tag from GitHub, null when up to date or not checked yet. */
+    private volatile String newerVersion;
 
     private static GitSyncPlugin instance;
 
@@ -38,6 +48,28 @@ public final class GitSyncPlugin extends JavaPlugin {
 
         // Metrics
         new Metrics(this, 35233);
+
+        // Every 24h (in ticks), starting right away
+        getServer().getScheduler().runTaskTimerAsynchronously(this, this::checkForUpdate, 0L, 20L * 60 * 60 * 24);
+    }
+
+    private void checkForUpdate() {
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpRequest request = HttpRequest.newBuilder(URI.create("https://api.github.com/repos/fanthpl/GitSync/releases/latest")).build();
+            String body = client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+            String latest = JsonParser.parseString(body).getAsJsonObject().get("tag_name").getAsString().replaceFirst("^v", "");
+            String current = getPluginMeta().getVersion();
+            if (ModuleDescriptor.Version.parse(latest).compareTo(ModuleDescriptor.Version.parse(current)) > 0) {
+                this.newerVersion = latest;
+                getLogger().warning("A newer version of GitSync is available: " + latest + " (current: " + current + ")");
+            }
+        } catch (Exception e) {
+            getLogger().fine("Update check failed: " + e);
+        }
+    }
+
+    public String newerVersion() {
+        return newerVersion;
     }
 
     @Override

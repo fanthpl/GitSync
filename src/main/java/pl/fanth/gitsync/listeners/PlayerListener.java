@@ -42,6 +42,14 @@ public class PlayerListener implements Listener {
                     .clickEvent(ClickEvent.runCommand("/git info")));
                 player.playSound(player, Sound.BLOCK_NOTE_BLOCK_BELL, 1.0F, 1.0F);
             }
+            String newerVersion = GitSyncPlugin.instance().newerVersion();
+            if (newerVersion != null) {
+                String url = "https://github.com/fanthpl/GitSync/releases/latest";
+                player.sendMessage(Component.text("[GitSync] A newer version is available: " + newerVersion + ". Click to download.")
+                    .color(NamedTextColor.AQUA)
+                    .hoverEvent(HoverEvent.showText(Component.text(url)))
+                    .clickEvent(ClickEvent.openUrl(url)));
+            }
         }, 60L);
     }
 
