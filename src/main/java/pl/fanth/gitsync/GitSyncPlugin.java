@@ -7,6 +7,7 @@ import pl.fanth.gitsync.config.ConfigurationFactory;
 import pl.fanth.gitsync.config.DataConfiguration;
 import pl.fanth.gitsync.config.PluginConfiguration;
 import pl.fanth.gitsync.config.ServerConfiguration;
+import org.bstats.bukkit.Metrics;
 import org.bukkit.plugin.java.JavaPlugin;
 import pl.fanth.gitsync.git.GitSyncService;
 import pl.fanth.gitsync.listeners.PlayerListener;
@@ -34,6 +35,9 @@ public final class GitSyncPlugin extends JavaPlugin {
 
         registerCommands();
         getServer().getPluginManager().registerEvents(new PlayerListener(), this);
+
+        // Metrics
+        new Metrics(this, 35233);
     }
 
     @Override
