@@ -80,7 +80,7 @@ public final class GitSyncPlugin extends JavaPlugin {
         return gitSyncService;
     }
 
-    /** Our own jar, so a commit does not offer to add GitSync itself to the pack. */
+    /** Our own jar, the one a pack update of GitSync is compared with. */
     @Override
     public File getFile() {
         return super.getFile();

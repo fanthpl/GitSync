@@ -438,19 +438,8 @@ public class GitSyncService {
 
     /** Jars in plugins/ that no pack entry claims and this server was not told to keep private. */
     public List<String> unknownJars() throws IOException {
-        List<String> ignored = new ArrayList<>();
-        if (this.plugin != null) {
-            ignored.addAll(this.plugin.dataConfiguration().ignoredPluginWildcards);
-            // Our own jar is not part of any pack, asking about it on every commit is noise
-            ignored.add(this.plugin.getFile().getName());
-        }
-        List<String> jars = new ArrayList<>(renderer().unknownJars(readManifest(), ignored));
-        if (this.plugin != null) {
-            // An update of our own jar uploaded while the server runs carries a different file
-            // name than the loaded one, so it is recognized by the plugin name inside it instead
-            jars.removeIf(jar -> this.plugin.getName().equals(pluginName(jar)));
-        }
-        return jars;
+        List<String> ignored = this.plugin == null ? List.of() : this.plugin.dataConfiguration().ignoredPluginWildcards;
+        return renderer().unknownJars(readManifest(), ignored);
     }
 
     /**
