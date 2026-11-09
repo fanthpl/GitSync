@@ -18,7 +18,7 @@ class PushUpdatePromptTest {
               "confirmed": true,
               "editing": false,
               "plugins": [
-                {"jar":"Thing-1.0.jar","name":"Thing","configPaths":["Thing"],"reloadCommands":["thing reload"],"wildcard":"Thing-*.jar","submitted":true,"ignored":false}
+                {"jar":"Thing-1.0.jar","name":"Thing","configPaths":["Thing"],"reloadCommands":["thing reload"],"wildcard":"Thing-*.jar","submitted":true,"ignored":false,"skipped":false}
               ],
               "pluginGroups": [
                 {"owner":"Thing","drafts":[{"path":"Thing-1.0.jar","layer":"base","skipped":false},{"path":"Thing/config.yml","layer":"server/lobby","skipped":false}]}
